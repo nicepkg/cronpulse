@@ -11,6 +11,7 @@ import blog from './routes/blog';
 import docsRoute from './routes/docs';
 import api from './routes/api';
 import status from './routes/status';
+import badge from './routes/badge';
 import analytics from './routes/analytics';
 import { renderLandingPage } from './views/landing';
 
@@ -36,6 +37,9 @@ app.route('/docs', docsRoute);
 
 // Status page (public)
 app.route('/status', status);
+
+// Status badge SVG (public)
+app.route('/badge', badge);
 
 // Analytics (admin only, requires SESSION_SECRET as key)
 app.route('/analytics', analytics);

@@ -12,11 +12,24 @@ dashboard.use('*', requireAuth);
 // Dashboard home - Check list
 dashboard.get('/', async (c) => {
   const user = c.get('user');
-  const checks = await c.env.DB.prepare(
-    'SELECT * FROM checks WHERE user_id = ? ORDER BY created_at DESC'
-  ).bind(user.id).all<Check>();
+  const timestamp = now();
+  const day1 = timestamp - 86400;
 
-  return c.html(renderLayout(user, 'Checks', renderCheckList(checks.results, user, c.env.APP_URL)));
+  const [checks, uptimeRows] = await Promise.all([
+    c.env.DB.prepare(
+      'SELECT * FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    ).bind(user.id).all<Check>(),
+    c.env.DB.prepare(
+      "SELECT check_id, COUNT(*) as total, SUM(CASE WHEN type = 'success' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id IN (SELECT id FROM checks WHERE user_id = ?) AND timestamp > ? GROUP BY check_id"
+    ).bind(user.id, day1).all<{ check_id: string; total: number; ok: number }>(),
+  ]);
+
+  const uptimeMap: Record<string, string> = {};
+  for (const row of uptimeRows.results) {
+    uptimeMap[row.check_id] = row.total > 0 ? ((row.ok / row.total) * 100).toFixed(1) + '%' : '—';
+  }
+
+  return c.html(renderLayout(user, 'Checks', renderCheckList(checks.results, user, c.env.APP_URL, uptimeMap)));
 });
 
 // New check form
@@ -386,7 +399,7 @@ function statusBadge(status: string): string {
   return `<span class="px-2 py-0.5 rounded text-xs font-medium ${colors[status] || colors.new}">${status}</span>`;
 }
 
-function renderCheckList(checks: Check[], user: User, appUrl: string): string {
+function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>): string {
   return `
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-bold">Your Checks</h1>
@@ -402,20 +415,23 @@ function renderCheckList(checks: Check[], user: User, appUrl: string): string {
       </div>
     ` : `
       <div class="bg-white rounded-lg border divide-y">
-        ${checks.map(check => `
+        ${checks.map(check => {
+          const uptime24h = uptimeMap?.[check.id] || '—';
+          return `
           <a href="/dashboard/checks/${check.id}" class="block px-3 sm:px-4 py-3 hover:bg-gray-50">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
                 ${statusBadge(check.status)}
+                <span class="text-xs font-medium ${uptimeColor(uptime24h)} hidden sm:inline" title="24h uptime">${uptime24h}</span>
               </div>
               <div class="text-xs sm:text-sm text-gray-400 whitespace-nowrap ml-2">
                 ${check.last_ping_at ? timeAgo(check.last_ping_at) : 'Never'}
                 &middot; ${formatDuration(check.period)}
               </div>
             </div>
-          </a>
-        `).join('')}
+          </a>`;
+        }).join('')}
       </div>
     `}`;
 }
@@ -528,11 +544,54 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
 
     <div class="bg-white rounded-lg border p-4 mb-6">
       <p class="text-sm font-medium mb-2">Ping URL</p>
-      <div class="overflow-x-auto">
-        <code class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}</code>
+      <div class="flex items-center gap-2">
+        <div class="overflow-x-auto flex-1">
+          <code id="ping-url" class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}</code>
+        </div>
+        <button onclick="copyToClipboard('${pingUrl}', this)" class="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm text-gray-600 transition-colors" title="Copy URL">Copy</button>
       </div>
       <p class="text-xs text-gray-400 mt-2">Add to your cron job: <code class="bg-gray-100 px-1 py-0.5 rounded">curl -fsS --retry 3 ${pingUrl}</code></p>
     </div>
+
+    <div class="bg-white rounded-lg border p-4 mb-6">
+      <p class="text-sm font-medium mb-2">Status Badge</p>
+      <div class="flex items-center gap-3 mb-3">
+        <img src="${appUrl}/badge/${check.id}" alt="status badge" />
+        <img src="${appUrl}/badge/${check.id}/uptime" alt="uptime badge" />
+      </div>
+      <div class="space-y-2">
+        <div>
+          <p class="text-xs text-gray-500 mb-1">Markdown</p>
+          <div class="flex items-center gap-2">
+            <code id="badge-md" class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">![CronPulse](${appUrl}/badge/${check.id})</code>
+            <button onclick="copyToClipboard('![CronPulse](${appUrl}/badge/${check.id})', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
+          </div>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 mb-1">HTML</p>
+          <div class="flex items-center gap-2">
+            <code class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">&lt;img src="${appUrl}/badge/${check.id}" alt="CronPulse status" /&gt;</code>
+            <button onclick="copyToClipboard('<img src=&quot;${appUrl}/badge/${check.id}&quot; alt=&quot;CronPulse status&quot; />', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    function copyToClipboard(text, btn) {
+      navigator.clipboard.writeText(text).then(function() {
+        var orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.add('bg-green-100', 'text-green-700');
+        btn.classList.remove('bg-gray-100', 'text-gray-600');
+        setTimeout(function() {
+          btn.textContent = orig;
+          btn.classList.remove('bg-green-100', 'text-green-700');
+          btn.classList.add('bg-gray-100', 'text-gray-600');
+        }, 2000);
+      });
+    }
+    </script>
 
     <div class="grid md:grid-cols-2 gap-6">
       <div>
