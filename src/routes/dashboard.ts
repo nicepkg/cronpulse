@@ -64,20 +64,28 @@ dashboard.get('/', async (c) => {
     healthMap[check.id] = calcHealthScore(raw.total, raw.ok, alertCountMap[check.id] || 0, check.status);
   }
 
-  // Collect all unique tags across checks
+  // Collect all unique tags and groups across checks
   const allTags = new Set<string>();
+  const allGroups = new Set<string>();
   for (const check of checks.results) {
     if (check.tags) {
       for (const t of check.tags.split(',')) {
         if (t.trim()) allTags.add(t.trim());
       }
     }
+    if (check.group_name) allGroups.add(check.group_name);
   }
 
-  // Filter checks by tag if a filter is active
-  const filteredChecks = tagFilter
-    ? checks.results.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter))
-    : checks.results;
+  const groupFilter = (c.req.query('group') || '').trim();
+
+  // Filter checks by tag and/or group
+  let filteredChecks = checks.results;
+  if (tagFilter) {
+    filteredChecks = filteredChecks.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter));
+  }
+  if (groupFilter) {
+    filteredChecks = filteredChecks.filter(check => check.group_name === groupFilter);
+  }
 
   // Import/export status messages
   const imported = c.req.query('imported');
@@ -88,7 +96,7 @@ dashboard.get('/', async (c) => {
   if (error === 'invalid-format') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Invalid file format. Expected CronPulse JSON export.</div>`;
   if (error === 'parse-error') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Could not parse the file. Please check the format.</div>`;
 
-  return c.html(renderLayout(user, 'Checks', message + renderCheckList(filteredChecks, user, c.env.APP_URL, uptimeMap, [...allTags].sort(), tagFilter, healthMap)));
+  return c.html(renderLayout(user, 'Checks', message + renderCheckList(filteredChecks, user, c.env.APP_URL, uptimeMap, [...allTags].sort(), tagFilter, healthMap, [...allGroups].sort(), groupFilter)));
 });
 
 // New check form
@@ -129,14 +137,15 @@ dashboard.post('/checks', async (c) => {
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
   const tags = parseTags(body.tags as string);
+  const groupName = (body.group_name as string || '').trim();
   const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
   const maintEnd = (body.maint_end as string) ? Math.floor(new Date(body.maint_end as string).getTime() / 1000) : null;
   const maintSchedule = (body.maint_schedule as string || '').trim();
   const timestamp = now();
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -234,13 +243,14 @@ dashboard.post('/checks/:id', async (c) => {
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
   const tags = parseTags(body.tags as string);
+  const groupName = (body.group_name as string || '').trim();
   const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
   const maintEnd = (body.maint_end as string) ? Math.floor(new Date(body.maint_end as string).getTime() / 1000) : null;
   const maintSchedule = (body.maint_schedule as string || '').trim();
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, maintStart, maintEnd, maintSchedule, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   // Invalidate KV cache
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
@@ -294,7 +304,7 @@ dashboard.post('/checks/:id/resume', async (c) => {
 dashboard.get('/export/json', async (c) => {
   const user = c.get('user');
   const checks = await c.env.DB.prepare(
-    'SELECT id, name, period, grace, status, tags, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, period, grace, status, tags, group_name, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all();
 
   const data = {
@@ -305,6 +315,7 @@ dashboard.get('/export/json', async (c) => {
       period: ch.period,
       grace: ch.grace,
       tags: ch.tags || '',
+      group_name: ch.group_name || '',
     })),
   };
 
@@ -317,14 +328,15 @@ dashboard.get('/export/json', async (c) => {
 dashboard.get('/export/csv', async (c) => {
   const user = c.get('user');
   const checks = await c.env.DB.prepare(
-    'SELECT name, period, grace, status, tags, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT name, period, grace, status, tags, group_name, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all();
 
-  const header = 'name,period_seconds,grace_seconds,status,tags';
+  const header = 'name,period_seconds,grace_seconds,status,tags,group';
   const rows = checks.results.map((ch: any) => {
     const name = '"' + (ch.name || '').replace(/"/g, '""') + '"';
     const tags = '"' + (ch.tags || '').replace(/"/g, '""') + '"';
-    return `${name},${ch.period},${ch.grace},${ch.status},${tags}`;
+    const group = '"' + (ch.group_name || '').replace(/"/g, '""') + '"';
+    return `${name},${ch.period},${ch.grace},${ch.status},${tags},${group}`;
   });
 
   const csv = [header, ...rows].join('\n');
@@ -369,11 +381,12 @@ dashboard.post('/import', async (c) => {
       const period = Math.max(60, Math.min(604800, parseInt(ch.period) || 3600));
       const grace = Math.max(60, Math.min(3600, parseInt(ch.grace) || 300));
       const tags = parseTags(ch.tags || '');
+      const groupName = (ch.group_name || '').trim().slice(0, 100);
       const timestamp = now();
 
       await c.env.DB.prepare(
-        'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+        'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, user.id, name, period, grace, tags, groupName, 'new', timestamp, timestamp).run();
       imported++;
     }
 
@@ -595,7 +608,12 @@ dashboard.get('/billing', async (c) => {
 // Settings page
 dashboard.get('/settings', async (c) => {
   const user = c.get('user');
-  return c.html(renderLayout(user, 'Settings', renderSettings(user)));
+  const saved = c.req.query('saved');
+  const err = c.req.query('err');
+  let msg = '';
+  if (saved === 'status-page') msg = '<div class="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">Status page settings saved.</div>';
+  if (err === 'logo-url') msg = '<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Logo URL must start with https://</div>';
+  return c.html(renderLayout(user, 'Settings', msg + renderSettings(user)));
 });
 
 // Generate API key
@@ -634,6 +652,28 @@ dashboard.post('/settings/api-key', async (c) => {
       <a href="/dashboard/settings" class="text-blue-600 hover:underline text-sm mt-4 inline-block">Back to Settings</a>
     </div>
   `));
+});
+
+// Update status page settings
+dashboard.post('/settings/status-page', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.parseBody();
+
+  const title = (body.status_page_title as string || '').trim().slice(0, 200);
+  const logoUrl = (body.status_page_logo_url as string || '').trim().slice(0, 500);
+  const description = (body.status_page_description as string || '').trim().slice(0, 500);
+  const isPublic = body.status_page_public ? 1 : 0;
+
+  // Basic URL validation for logo
+  if (logoUrl && !logoUrl.startsWith('https://')) {
+    return c.redirect('/dashboard/settings?err=logo-url');
+  }
+
+  await c.env.DB.prepare(
+    'UPDATE users SET status_page_title = ?, status_page_logo_url = ?, status_page_description = ?, status_page_public = ?, updated_at = ? WHERE id = ?'
+  ).bind(title, logoUrl, description, isPublic, now(), user.id).run();
+
+  return c.redirect('/dashboard/settings?saved=status-page');
 });
 
 // Generate/regenerate webhook signing secret
@@ -782,13 +822,34 @@ function maintBadge(check: Check): string {
   return '';
 }
 
-function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string, healthMap?: Record<string, number>): string {
+function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string, healthMap?: Record<string, number>, allGroups?: string[], activeGroup?: string): string {
+  // Build filter query strings preserving other filters
+  function filterUrl(params: Record<string, string>): string {
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(params)) {
+      if (v) parts.push(`${k}=${encodeURIComponent(v)}`);
+    }
+    return '/dashboard' + (parts.length ? '?' + parts.join('&') : '');
+  }
+
+  const groupFilterBar = allGroups && allGroups.length > 0 ? `
+    <div class="flex flex-wrap items-center gap-2 mb-2">
+      <span class="text-xs text-gray-500 font-medium">Group:</span>
+      <a href="${filterUrl({ tag: activeTag || '' })}" class="px-2 py-0.5 rounded-full text-xs ${!activeGroup ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">All</a>
+      ${allGroups.map(g => `
+        <a href="${filterUrl({ group: activeGroup === g ? '' : g, tag: activeTag || '' })}" class="px-2 py-0.5 rounded-full text-xs ${activeGroup === g ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}">
+          ${escapeHtml(g)}${activeGroup === g ? ' <span class="ml-0.5">&times;</span>' : ''}
+        </a>
+      `).join('')}
+    </div>
+  ` : '';
+
   const tagFilterBar = allTags && allTags.length > 0 ? `
     <div class="flex flex-wrap items-center gap-2 mb-4">
-      <span class="text-xs text-gray-500 font-medium">Filter:</span>
-      <a href="/dashboard" class="px-2 py-0.5 rounded-full text-xs ${!activeTag ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">All</a>
+      <span class="text-xs text-gray-500 font-medium">Tag:</span>
+      <a href="${filterUrl({ group: activeGroup || '' })}" class="px-2 py-0.5 rounded-full text-xs ${!activeTag ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">All</a>
       ${allTags.map(tag => `
-        <a href="${activeTag === tag ? '/dashboard' : `/dashboard?tag=${encodeURIComponent(tag)}`}" class="px-2 py-0.5 rounded-full text-xs ${activeTag === tag ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}">
+        <a href="${filterUrl({ tag: activeTag === tag ? '' : tag, group: activeGroup || '' })}" class="px-2 py-0.5 rounded-full text-xs ${activeTag === tag ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}">
           ${escapeHtml(tag)}${activeTag === tag ? ' <span class="ml-0.5">&times;</span>' : ''}
         </a>
       `).join('')}
@@ -816,11 +877,12 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
       </div>
     </div>
     <p class="text-sm text-gray-500 mb-4">${checks.length} / ${user.check_limit} checks used</p>
+    ${groupFilterBar}
     ${tagFilterBar}
     ${checks.length === 0 ? `
       <div class="bg-white rounded-lg border p-12 text-center">
-        <p class="text-gray-500">${activeTag ? 'No checks with this tag.' : 'No checks yet. Create your first one!'}</p>
-        ${activeTag ? '<a href="/dashboard" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Clear filter</a>' : '<a href="/dashboard/checks/new" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Create a check</a>'}
+        <p class="text-gray-500">${activeTag || activeGroup ? 'No checks match the current filter.' : 'No checks yet. Create your first one!'}</p>
+        ${activeTag || activeGroup ? '<a href="/dashboard" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Clear filter</a>' : '<a href="/dashboard/checks/new" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Create a check</a>'}
       </div>
     ` : `
       <div class="bg-white rounded-lg border divide-y">
@@ -834,6 +896,7 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
                 <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
                 ${statusBadge(check.status)}
                 ${maintBadge(check)}
+                ${check.group_name ? `<span class="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-xs">${escapeHtml(check.group_name)}</span>` : ''}
                 ${renderTagPills(check.tags)}
                 <span class="text-xs font-medium ${uptimeColor(uptime7d)} hidden sm:inline" title="7d uptime">${uptime7d}</span>
                 <span class="hidden sm:inline">${healthScoreBadge(hs)}</span>
@@ -873,6 +936,12 @@ function renderCheckForm(check?: Check): string {
             ${graceOptions().map(o => `<option value="${o.value}" ${check && check.grace === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
           </select>
           <p class="text-xs text-gray-400 mt-1">Extra time before alerting</p>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Group</label>
+          <input type="text" name="group_name" value="${isEdit ? escapeHtml(check!.group_name || '') : ''}"
+            class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. Production, Staging, Backups">
+          <p class="text-xs text-gray-400 mt-1">Group name for organizing checks into folders</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Tags</label>
@@ -932,6 +1001,7 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
           <h1 class="text-xl sm:text-2xl font-bold">${escapeHtml(check.name)}</h1>
           ${healthScoreBadge(hs)}
         </div>
+        ${check.group_name ? `<div class="flex items-center gap-1 mt-1"><span class="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-xs">${escapeHtml(check.group_name)}</span></div>` : ''}
         ${check.tags ? `<div class="flex flex-wrap gap-1 mt-1">${renderTagPills(check.tags)}</div>` : ''}
         <span class="text-sm text-gray-500">ID: ${check.id}</span>
       </div>
@@ -1341,6 +1411,34 @@ function renderSettings(user: User): string {
           </button>
         </form>
         <p class="text-xs text-gray-400 mt-3">See <a href="/docs#webhook-signatures" class="text-blue-600 hover:underline">docs</a> for verification instructions.</p>
+      </div>
+
+      <div class="bg-white rounded-lg border p-6 mt-6">
+        <h2 class="font-semibold mb-3">Public Status Page</h2>
+        <p class="text-sm text-gray-600 mb-3">Customize your public status page at <a href="/status/${user.id}" class="text-blue-600 hover:underline">/status/${user.id}</a>. Share it with your team or users.</p>
+        <form method="POST" action="/dashboard/settings/status-page" class="space-y-3">
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" name="status_page_public" value="1" ${user.status_page_public ? 'checked' : ''}>
+            Enable public status page
+          </label>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Page Title</label>
+            <input type="text" name="status_page_title" value="${escapeHtml(user.status_page_title || '')}"
+              class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. Acme Corp Status">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Logo URL</label>
+            <input type="url" name="status_page_logo_url" value="${escapeHtml(user.status_page_logo_url || '')}"
+              class="w-full px-3 py-2 border rounded-md text-sm" placeholder="https://example.com/logo.png">
+            <p class="text-xs text-gray-400 mt-1">Must be an HTTPS URL. Recommended: 200x50px or similar.</p>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Description</label>
+            <input type="text" name="status_page_description" value="${escapeHtml(user.status_page_description || '')}"
+              class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. Real-time status of our scheduled tasks">
+          </div>
+          <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">Save Status Page Settings</button>
+        </form>
       </div>
     </div>`;
 }

@@ -68,14 +68,19 @@ api.use('*', rateLimit({
 api.get('/checks', async (c) => {
   const user = c.get('user');
   const tagFilter = (c.req.query('tag') || '').trim().toLowerCase();
+  const groupFilter = (c.req.query('group') || '').trim();
 
   const checks = await c.env.DB.prepare(
-    'SELECT id, name, period, grace, status, tags, maint_start, maint_end, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, period, grace, status, tags, group_name, maint_start, maint_end, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all<Check>();
 
-  const results = tagFilter
-    ? checks.results.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter))
-    : checks.results;
+  let results = checks.results;
+  if (tagFilter) {
+    results = results.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter));
+  }
+  if (groupFilter) {
+    results = results.filter(check => check.group_name === groupFilter);
+  }
 
   return c.json({ checks: results });
 });
@@ -83,7 +88,7 @@ api.get('/checks', async (c) => {
 // POST /api/v1/checks - Create a check
 api.post('/checks', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   // Check limit
   const count = await c.env.DB.prepare(
@@ -99,6 +104,7 @@ api.post('/checks', async (c) => {
   const period = body.period || 3600;
   const grace = body.grace || 300;
   const tags = parseTags(body.tags);
+  const groupName = (body.group_name || '').trim();
   const maintStart = body.maint_start ?? null;
   const maintEnd = body.maint_end ?? null;
   const maintSchedule = (body.maint_schedule || '').trim();
@@ -118,8 +124,8 @@ api.post('/checks', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -146,7 +152,7 @@ api.post('/checks', async (c) => {
 api.get('/checks/export', async (c) => {
   const user = c.get('user');
   const checks = await c.env.DB.prepare(
-    'SELECT name, period, grace, tags FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT name, period, grace, tags, group_name FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all();
 
   return c.json({
@@ -157,6 +163,7 @@ api.get('/checks/export', async (c) => {
       period: ch.period,
       grace: ch.grace,
       tags: ch.tags || '',
+      group_name: ch.group_name || '',
     })),
   });
 });
@@ -190,11 +197,12 @@ api.post('/checks/import', async (c) => {
     const period = Math.max(60, Math.min(604800, parseInt(ch.period) || 3600));
     const grace = Math.max(60, Math.min(3600, parseInt(ch.grace) || 300));
     const tags = parseTags(ch.tags || '');
+    const groupName = (ch.group_name || '').trim().slice(0, 100);
     const timestamp = now();
 
     await c.env.DB.prepare(
-      'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+      'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, user.id, name, period, grace, tags, groupName, 'new', timestamp, timestamp).run();
     imported.push({ id, name, ping_url: `${c.env.APP_URL}/ping/${id}` });
   }
 
@@ -226,7 +234,7 @@ api.get('/checks/:id', async (c) => {
 api.patch('/checks/:id', async (c) => {
   const user = c.get('user');
   const checkId = c.req.param('id');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   const existing = await c.env.DB.prepare(
     'SELECT * FROM checks WHERE id = ? AND user_id = ?'
@@ -238,6 +246,7 @@ api.patch('/checks/:id', async (c) => {
   const period = body.period || existing.period as number;
   const grace = body.grace || existing.grace as number;
   const tags = body.tags !== undefined ? parseTags(body.tags) : (existing.tags as string || '');
+  const groupName = body.group_name !== undefined ? (body.group_name || '').trim() : (existing.group_name as string || '');
   const maintStart = body.maint_start !== undefined ? (body.maint_start ?? null) : (existing.maint_start as number | null);
   const maintEnd = body.maint_end !== undefined ? (body.maint_end ?? null) : (existing.maint_end as number | null);
   const maintSchedule = body.maint_schedule !== undefined ? (body.maint_schedule || '').trim() : (existing.maint_schedule as string || '');
@@ -255,8 +264,8 @@ api.patch('/checks/:id', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, maintStart, maintEnd, maintSchedule, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
 

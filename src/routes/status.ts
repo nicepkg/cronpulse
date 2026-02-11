@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import type { Env } from '../types';
+import type { Env, User, Check } from '../types';
 
 const status = new Hono<{ Bindings: Env }>();
 
@@ -214,6 +214,133 @@ status.get('/', async (c) => {
   <footer class="max-w-3xl mx-auto px-4 py-8 text-center text-sm text-gray-400">
     <p>&copy; 2026 CronPulse. Built on Cloudflare.</p>
   </footer>
+</body>
+</html>`);
+});
+
+// User-specific public status page: /status/:userId
+status.get('/:userId', async (c) => {
+  const userId = c.req.param('userId');
+  const appUrl = c.env.APP_URL;
+
+  // Find user
+  const user = await c.env.DB.prepare(
+    'SELECT id, status_page_title, status_page_logo_url, status_page_description, status_page_public FROM users WHERE id = ?'
+  ).bind(userId).first<Pick<User, 'id' | 'status_page_title' | 'status_page_logo_url' | 'status_page_description' | 'status_page_public'>>();
+
+  if (!user || !user.status_page_public) {
+    return c.text('Not Found', 404);
+  }
+
+  const title = user.status_page_title || 'Status Page';
+  const description = user.status_page_description || 'Real-time status of monitored services.';
+  const logoUrl = user.status_page_logo_url || '';
+
+  // Get user's checks (only non-paused)
+  const checks = await c.env.DB.prepare(
+    "SELECT id, name, status, group_name, last_ping_at, period, grace FROM checks WHERE user_id = ? AND status != 'paused' ORDER BY group_name ASC, name ASC"
+  ).bind(userId).all<Check>();
+
+  // Calculate overall status
+  const hasDown = checks.results.some(ch => ch.status === 'down');
+  const overallStatus = hasDown ? 'degraded' : 'operational';
+  const statusColor = overallStatus === 'operational' ? 'green' : 'yellow';
+  const statusLabel = overallStatus === 'operational' ? 'All Systems Operational' : 'Some Systems Degraded';
+
+  // Group checks by group_name
+  const grouped: Record<string, Check[]> = {};
+  for (const ch of checks.results) {
+    const g = ch.group_name || 'Ungrouped';
+    if (!grouped[g]) grouped[g] = [];
+    grouped[g].push(ch);
+  }
+  const groupNames = Object.keys(grouped).sort((a, b) => {
+    if (a === 'Ungrouped') return 1;
+    if (b === 'Ungrouped') return -1;
+    return a.localeCompare(b);
+  });
+
+  function escapeHtml(str: string): string {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function checkStatusBadge(s: string): string {
+    if (s === 'up') return '<span class="text-sm font-medium text-green-600">Operational</span>';
+    if (s === 'down') return '<span class="text-sm font-medium text-red-600">Down</span>';
+    if (s === 'new') return '<span class="text-sm font-medium text-gray-400">Pending</span>';
+    return '<span class="text-sm font-medium text-gray-400">Unknown</span>';
+  }
+
+  // Return JSON for API consumers
+  const accept = c.req.header('Accept') || '';
+  if (accept.includes('application/json')) {
+    return c.json({
+      title,
+      status: overallStatus,
+      checks: checks.results.map(ch => ({
+        name: ch.name,
+        status: ch.status,
+        group: ch.group_name || null,
+        last_ping_at: ch.last_ping_at,
+      })),
+      timestamp: Date.now(),
+    });
+  }
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)} - CronPulse</title>
+  <meta name="description" content="${escapeHtml(description)}">
+  <meta name="robots" content="noindex">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-white">
+  <main class="max-w-3xl mx-auto px-4 py-12">
+    <div class="flex items-center gap-4 mb-2">
+      ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="Logo" class="h-10 max-w-[200px] object-contain" crossorigin="anonymous">` : ''}
+      <h1 class="text-3xl font-bold">${escapeHtml(title)}</h1>
+    </div>
+    <p class="text-gray-600 mb-10">${escapeHtml(description)}</p>
+
+    <!-- Status Banner -->
+    <div class="bg-${statusColor}-50 border border-${statusColor}-200 rounded-lg p-6 mb-8">
+      <div class="flex items-center gap-3">
+        <div class="w-3 h-3 rounded-full bg-${statusColor}-500 animate-pulse"></div>
+        <span class="text-lg font-semibold text-${statusColor}-800">${statusLabel}</span>
+      </div>
+    </div>
+
+    <!-- Checks by Group -->
+    ${groupNames.map(groupName => `
+      <div class="mb-6">
+        ${groupNames.length > 1 || groupName !== 'Ungrouped' ? `<h2 class="text-sm font-semibold text-gray-500 mb-3">${escapeHtml(groupName)}</h2>` : ''}
+        <div class="border rounded-lg divide-y">
+          ${grouped[groupName].map(ch => `
+            <div class="p-4 flex items-center justify-between">
+              <div>
+                <p class="font-medium text-gray-900">${escapeHtml(ch.name)}</p>
+              </div>
+              ${checkStatusBadge(ch.status)}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `).join('')}
+
+    ${checks.results.length === 0 ? `
+      <div class="border rounded-lg p-12 text-center">
+        <p class="text-gray-400">No monitored services to display.</p>
+      </div>
+    ` : ''}
+
+    <div class="mt-8 text-center">
+      <p class="text-xs text-gray-300">Powered by <a href="${appUrl}" class="text-gray-400 hover:text-gray-500">CronPulse</a></p>
+      <p class="text-xs text-gray-300 mt-1">Last updated: ${new Date().toISOString()}</p>
+    </div>
+  </main>
 </body>
 </html>`);
 });

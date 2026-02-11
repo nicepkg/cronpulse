@@ -18,6 +18,10 @@ export interface User {
   api_key_hash: string | null;
   webhook_signing_secret: string;
   timezone: string;
+  status_page_title: string;
+  status_page_logo_url: string;
+  status_page_description: string;
+  status_page_public: number;
   created_at: number;
   updated_at: number;
 }
@@ -35,6 +39,7 @@ export interface Check {
   alert_count: number;
   ping_count: number;
   tags: string;
+  group_name: string;
   maint_start: number | null;
   maint_end: number | null;
   maint_schedule: string;
