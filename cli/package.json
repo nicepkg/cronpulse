@@ -1,0 +1,38 @@
+{
+  "name": "cron-pulse-cli",
+  "version": "1.0.0",
+  "description": "CLI for CronPulse - monitor your cron jobs, pipelines, and scheduled tasks",
+  "keywords": [
+    "cron",
+    "monitoring",
+    "heartbeat",
+    "healthcheck",
+    "cron-monitoring",
+    "dead-man-switch",
+    "scheduled-tasks",
+    "uptime",
+    "alerting",
+    "devops"
+  ],
+  "homepage": "https://cron-pulse.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicepkg/cronpulse"
+  },
+  "license": "MIT",
+  "author": "CronPulse <hello@cron-pulse.com>",
+  "type": "module",
+  "bin": {
+    "cronpulse": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node build.js",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

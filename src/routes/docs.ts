@@ -58,7 +58,13 @@ function renderDocsPage(appUrl: string): string {
   <div class="max-w-5xl mx-auto px-4 py-12 flex gap-12">
     <!-- Sidebar -->
     <aside class="sidebar hidden md:block w-48 flex-shrink-0">
-      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Getting Started</p>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">CLI</p>
+      <a href="#cli-install">Install</a>
+      <a href="#cli-ping">Ping</a>
+      <a href="#cli-wrap">Wrap command</a>
+      <a href="#cli-list">List checks</a>
+      <a href="#cli-config">Config</a>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">REST API</p>
       <a href="#authentication">Authentication</a>
       <a href="#base-url">Base URL</a>
       <a href="#errors">Errors</a>
@@ -90,10 +96,67 @@ function renderDocsPage(appUrl: string): string {
 
     <!-- Content -->
     <main class="prose flex-1 min-w-0">
-      <h1 class="text-3xl font-bold mb-2" style="border-top:none;margin-top:0;padding-top:0;">API Documentation</h1>
-      <p>Manage your CronPulse checks programmatically using the REST API. Available on <strong>Pro</strong> and <strong>Business</strong> plans.</p>
+      <h1 class="text-3xl font-bold mb-2" style="border-top:none;margin-top:0;padding-top:0;">Documentation</h1>
+      <p>Monitor your cron jobs using the CLI or REST API.</p>
 
-      <h2 id="base-url">Base URL</h2>
+      <h2 id="cli-install" style="border-top: 3px solid #16a34a; padding-top: 1.5rem;">CLI — Install</h2>
+      <p>Install the CronPulse CLI globally:</p>
+      <pre><code>npm install -g cron-pulse-cli</code></pre>
+      <p>Or use directly without installing:</p>
+      <pre><code>npx cron-pulse-cli ping YOUR_CHECK_ID</code></pre>
+
+      <h2 id="cli-ping">CLI — Send a Ping</h2>
+      <p>Send a heartbeat ping to signal your job ran successfully:</p>
+      <pre><code># Success ping (default)
+cronpulse ping YOUR_CHECK_ID
+
+# Start signal — mark job as "running"
+cronpulse ping YOUR_CHECK_ID --start
+
+# Fail signal — immediately trigger alert
+cronpulse ping YOUR_CHECK_ID --fail</code></pre>
+      <h3>In a crontab</h3>
+      <pre><code>*/5 * * * * cronpulse ping abc123</code></pre>
+
+      <h2 id="cli-wrap">CLI — Wrap a Command</h2>
+      <p>Wrap any command to automatically send start/success/fail signals:</p>
+      <pre><code># Sends /start, runs your command, then /ping or /fail based on exit code
+cronpulse wrap YOUR_CHECK_ID -- ./backup.sh
+
+# Works with pipes and redirects
+cronpulse wrap YOUR_CHECK_ID -- pg_dump mydb &gt; /tmp/backup.sql
+
+# In a crontab
+0 2 * * * cronpulse wrap abc123 -- ./nightly-backup.sh</code></pre>
+      <p>Exit code 0 &rarr; success ping. Any other exit code &rarr; fail signal (immediate alert).</p>
+
+      <h2 id="cli-list">CLI — List Checks</h2>
+      <p>List all your checks (requires API key):</p>
+      <pre><code># First configure your API key
+cronpulse config --api-key YOUR_API_KEY
+
+# List all checks
+cronpulse list
+
+# Filter by tag or group
+cronpulse list --tag production
+cronpulse list --group database
+
+# Show check details
+cronpulse status abc123</code></pre>
+
+      <h2 id="cli-config">CLI — Configuration</h2>
+      <pre><code># Set your API key (get from Dashboard → Settings)
+cronpulse config --api-key cpk_your_key_here
+
+# Use a self-hosted server
+cronpulse config --server https://my-cronpulse.example.com
+
+# View current config
+cronpulse config</code></pre>
+      <p>Config is stored at <code>~/.cronpulse/config.json</code>.</p>
+
+      <h2 id="base-url" style="border-top: 3px solid #2563eb; padding-top: 1.5rem;">REST API — Base URL</h2>
       <pre><code>${appUrl}/api/v1</code></pre>
       <p>All API endpoints are relative to this base URL.</p>
 

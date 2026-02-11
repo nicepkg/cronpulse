@@ -189,6 +189,40 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
     </div>
   </section>
 
+  <!-- CLI Section -->
+  <section class="py-16">
+    <div class="max-w-4xl mx-auto px-4">
+      <h2 class="text-2xl font-bold text-center mb-4">CLI for power users</h2>
+      <p class="text-center text-gray-600 mb-10">Install the CLI and wrap any command. Automatically sends start, success, or fail signals.</p>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <h3 class="font-semibold text-sm mb-3 text-gray-500 uppercase tracking-wide">Install</h3>
+          <div class="bg-gray-900 rounded-lg p-4">
+            <code class="text-green-400 text-sm">npm install -g cron-pulse-cli</code>
+          </div>
+        </div>
+        <div>
+          <h3 class="font-semibold text-sm mb-3 text-gray-500 uppercase tracking-wide">Quick ping</h3>
+          <div class="bg-gray-900 rounded-lg p-4">
+            <code class="text-green-400 text-sm">cronpulse ping <span class="text-yellow-300">abc123</span></code>
+          </div>
+        </div>
+        <div class="md:col-span-2">
+          <h3 class="font-semibold text-sm mb-3 text-gray-500 uppercase tracking-wide">Wrap any command</h3>
+          <div class="bg-gray-900 rounded-lg p-4">
+            <code class="text-green-400 text-sm">
+              <span class="text-gray-500"># Sends /start, runs your command, then /ping (success) or /fail</span><br>
+              cronpulse wrap <span class="text-yellow-300">abc123</span> -- pg_dump mydb &gt; /tmp/backup.sql<br><br>
+              <span class="text-gray-500"># Use in crontab</span><br>
+              0 2 * * * cronpulse wrap <span class="text-yellow-300">abc123</span> -- ./backup.sh
+            </code>
+          </div>
+        </div>
+      </div>
+      <p class="text-center text-sm text-gray-400 mt-6">Or use without installing: <code class="bg-gray-100 px-2 py-0.5 rounded text-gray-700">npx cron-pulse-cli ping abc123</code></p>
+    </div>
+  </section>
+
   <!-- Features -->
   <section class="py-16">
     <div class="max-w-5xl mx-auto px-4">
@@ -221,8 +255,8 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
         </div>
         <div class="bg-white border rounded-lg p-5">
           <div class="text-2xl mb-2">&#128268;</div>
-          <h3 class="font-semibold mb-1">REST API</h3>
-          <p class="text-sm text-gray-600">Manage checks, incidents, and alerts programmatically. Perfect for CI/CD.</p>
+          <h3 class="font-semibold mb-1">REST API + CLI</h3>
+          <p class="text-sm text-gray-600">Manage checks via API or CLI. Wrap commands for auto start/success/fail signals.</p>
         </div>
         <div class="bg-white border rounded-lg p-5">
           <div class="text-2xl mb-2">&#128276;</div>
@@ -252,9 +286,9 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
         <div class="bg-white rounded-lg border p-5">
           <div class="bg-gray-900 rounded-md p-3 mb-4 text-left">
             <code class="text-green-400 text-xs">
-              <span class="text-gray-500"># Database backup</span><br>
-              0 2 * * * pg_dump ... &amp;&amp; \\<br>
-              &nbsp; curl -fsS ${appUrl}/ping/abc
+              <span class="text-gray-500"># Database backup with CLI</span><br>
+              0 2 * * * cronpulse wrap abc -- \\<br>
+              &nbsp; pg_dump mydb &gt; /tmp/backup.sql
             </code>
           </div>
           <h3 class="font-semibold text-sm">Database Backups</h3>
