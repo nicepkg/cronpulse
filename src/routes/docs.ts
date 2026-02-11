@@ -47,11 +47,11 @@ function renderDocsPage(appUrl: string): string {
 <body class="bg-white">
   <nav class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between border-b">
     <a href="/" class="text-xl font-bold">CronPulse</a>
-    <div class="flex items-center gap-4">
-      <a href="/docs" class="text-sm text-gray-900 font-medium">Docs</a>
-      <a href="/blog" class="text-sm text-gray-600 hover:text-gray-900">Blog</a>
-      <a href="/#pricing" class="text-sm text-gray-600 hover:text-gray-900">Pricing</a>
-      <a href="/auth/login" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">Get Started</a>
+    <div class="flex items-center gap-2 sm:gap-4">
+      <a href="/docs" class="text-sm text-gray-900 font-medium hidden sm:inline">Docs</a>
+      <a href="/blog" class="text-sm text-gray-600 hover:text-gray-900 hidden sm:inline">Blog</a>
+      <a href="/#pricing" class="text-sm text-gray-600 hover:text-gray-900 hidden sm:inline">Pricing</a>
+      <a href="/auth/login" class="bg-blue-600 text-white px-3 py-1.5 sm:px-4 sm:py-2 rounded-md text-sm font-medium hover:bg-blue-700">Get Started</a>
     </div>
   </nav>
 
@@ -75,6 +75,9 @@ function renderDocsPage(appUrl: string): string {
       <a href="#alert-history">Alert history</a>
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Ping Endpoint</p>
       <a href="#send-ping">Send a ping</a>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Badges</p>
+      <a href="#status-badge">Status badge</a>
+      <a href="#uptime-badge">Uptime badge</a>
     </aside>
 
     <!-- Content -->
@@ -274,6 +277,51 @@ curl -fsS ${appUrl}/ping/YOUR_CHECK_ID</code></pre>
       <h3>Response</h3>
       <pre><code>OK</code></pre>
       <p>Returns <code>200 OK</code> on success, <code>404</code> if the check ID doesn't exist.</p>
+
+      <h2 id="status-badge" style="border-top: 3px solid #2563eb; padding-top: 1.5rem;">Status Badge</h2>
+      <p>Embed a live status badge in your README, docs, or status page. <strong>No authentication required.</strong></p>
+      <p><span class="method method-get">GET</span> <span class="endpoint">/badge/:checkId</span></p>
+      <p>Returns an SVG image showing the current status of a check: <code>up</code>, <code>down</code>, <code>late</code>, <code>paused</code>, or <code>new</code>.</p>
+      <h3>Example</h3>
+      <pre><code>&lt;!-- Markdown --&gt;
+![CronPulse](${appUrl}/badge/YOUR_CHECK_ID)
+
+&lt;!-- HTML --&gt;
+&lt;img src="${appUrl}/badge/YOUR_CHECK_ID" alt="CronPulse status" /&gt;</code></pre>
+      <h3>Response</h3>
+      <p>Returns <code>image/svg+xml</code> with 30-second cache. Returns <code>404</code> with a "not found" badge if the check ID doesn't exist.</p>
+      <table>
+        <thead><tr><th>Status</th><th>Color</th></tr></thead>
+        <tbody>
+          <tr><td><code>up</code></td><td>Green (#22c55e)</td></tr>
+          <tr><td><code>down</code></td><td>Red (#ef4444)</td></tr>
+          <tr><td><code>late</code></td><td>Amber (#f59e0b)</td></tr>
+          <tr><td><code>paused</code></td><td>Gray (#6b7280)</td></tr>
+          <tr><td><code>new</code></td><td>Blue (#3b82f6)</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="uptime-badge">Uptime Badge</h2>
+      <p><span class="method method-get">GET</span> <span class="endpoint">/badge/:checkId/uptime</span></p>
+      <p>Returns an SVG badge showing the uptime percentage for a check over a given period.</p>
+      <h3>Query Parameters</h3>
+      <table>
+        <thead><tr><th>Param</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>period</code></td><td>string</td><td><code>24h</code></td><td>Time window: <code>24h</code>, <code>7d</code>, or <code>30d</code></td></tr>
+        </tbody>
+      </table>
+      <h3>Example</h3>
+      <pre><code>&lt;!-- 24-hour uptime --&gt;
+![Uptime](${appUrl}/badge/YOUR_CHECK_ID/uptime)
+
+&lt;!-- 7-day uptime --&gt;
+![Uptime 7d](${appUrl}/badge/YOUR_CHECK_ID/uptime?period=7d)
+
+&lt;!-- 30-day uptime --&gt;
+![Uptime 30d](${appUrl}/badge/YOUR_CHECK_ID/uptime?period=30d)</code></pre>
+      <h3>Response</h3>
+      <p>Returns <code>image/svg+xml</code> with 60-second cache. Color coded: green (&ge; 99.5%), amber (&ge; 95%), red (&lt; 95%).</p>
 
     </main>
   </div>

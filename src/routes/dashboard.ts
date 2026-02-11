@@ -656,6 +656,22 @@ function renderChannels(channels: Channel[]): string {
         </button>
       </form>
 
+      <!-- Slack Setup Guide -->
+      <details class="bg-white rounded-lg border p-6 mb-6">
+        <summary class="font-semibold cursor-pointer text-sm">How to set up Slack notifications</summary>
+        <div class="mt-3 text-sm text-gray-600 space-y-3">
+          <ol class="list-decimal pl-5 space-y-2">
+            <li>Go to <a href="https://api.slack.com/apps" target="_blank" rel="noopener" class="text-blue-600 hover:underline">api.slack.com/apps</a> and click <strong>Create New App</strong> &rarr; <strong>From scratch</strong>.</li>
+            <li>Name your app (e.g. "CronPulse") and select your workspace.</li>
+            <li>In the left sidebar, click <strong>Incoming Webhooks</strong> and toggle it <strong>On</strong>.</li>
+            <li>Click <strong>Add New Webhook to Workspace</strong> and choose a channel (e.g. #alerts).</li>
+            <li>Copy the webhook URL (starts with <code>https://hooks.slack.com/services/...</code>).</li>
+            <li>Paste it above as a <strong>Slack Webhook</strong> channel.</li>
+          </ol>
+          <p class="text-xs text-gray-400">CronPulse sends JSON payloads with <code>text</code> field, compatible with Slack incoming webhooks.</p>
+        </div>
+      </details>
+
       ${channels.length === 0 ? '<p class="text-sm text-gray-400">No channels configured.</p>' : `
         <div class="bg-white rounded-lg border divide-y">
           ${channels.map(ch => `
