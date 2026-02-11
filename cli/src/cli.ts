@@ -45,6 +45,24 @@ async function httpGet(url: string, apiKey: string): Promise<any> {
   return res.json();
 }
 
+async function httpPost(url: string, apiKey: string, body: Record<string, unknown>): Promise<any> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
 async function httpPing(url: string): Promise<{ ok: boolean; status: number; ms: number }> {
   const start = Date.now();
   try {
@@ -65,6 +83,144 @@ async function httpPing(url: string): Promise<{ ok: boolean; status: number; ms:
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
+
+function parseDuration(s: string): number {
+  const m = s.match(/^(\d+)(s|m|h|d)$/);
+  if (!m) throw new Error(`Invalid duration: "${s}". Use format like 5m, 1h, 1d`);
+  const n = parseInt(m[1], 10);
+  const unit = m[2];
+  if (unit === 's') return n;
+  if (unit === 'm') return n * 60;
+  if (unit === 'h') return n * 3600;
+  return n * 86400;
+}
+
+function cronToSeconds(expr: string): number {
+  // Simple heuristic for common cron patterns
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5) return 3600; // fallback
+
+  const [min, hour, dom, , ] = parts;
+
+  // */N * * * * → every N minutes
+  if (min.startsWith('*/') && hour === '*') {
+    return parseInt(min.slice(2), 10) * 60;
+  }
+  // specific minute, */N hour → every N hours
+  if (hour.startsWith('*/')) {
+    return parseInt(hour.slice(2), 10) * 3600;
+  }
+  // specific minute, * hour → every hour
+  if (/^\d+$/.test(min) && hour === '*') {
+    return 3600;
+  }
+  // specific minute and hour, * dom → every day
+  if (/^\d+$/.test(min) && /^\d+$/.test(hour) && dom === '*') {
+    return 86400;
+  }
+  // fallback: daily
+  return 86400;
+}
+
+function periodToCron(seconds: number): string {
+  if (seconds <= 60) return '* * * * *';
+  if (seconds < 3600) {
+    const mins = Math.round(seconds / 60);
+    return `*/${mins} * * * *`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.round(seconds / 3600);
+    if (hours === 1) return '0 * * * *';
+    return `0 */${hours} * * *`;
+  }
+  return '0 0 * * *';
+}
+
+async function cmdInit(args: string[]) {
+  const config = loadConfig();
+  if (!config.apiKey) {
+    console.error('No API key configured. Run: cronpulse config --api-key YOUR_KEY');
+    process.exit(1);
+  }
+
+  let name = '';
+  let every = '';
+  let cron = '';
+  let grace = '';
+  let group = '';
+  let tag = '';
+
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === '--every' || args[i] === '-e') && args[i + 1]) {
+      every = args[++i];
+    } else if (args[i] === '--cron' && args[i + 1]) {
+      cron = args[++i];
+    } else if (args[i] === '--grace' && args[i + 1]) {
+      grace = args[++i];
+    } else if (args[i] === '--group' && args[i + 1]) {
+      group = args[++i];
+    } else if (args[i] === '--tag' && args[i + 1]) {
+      tag = args[++i];
+    } else if (!args[i].startsWith('-') && !name) {
+      name = args[i];
+    }
+  }
+
+  if (!name) {
+    console.error('Usage: cronpulse init "Job Name" --every 1h');
+    console.error('       cronpulse init "Job Name" --cron "0 2 * * *"');
+    process.exit(1);
+  }
+
+  if (!every && !cron) {
+    console.error('Provide --every <duration> or --cron <expression>');
+    process.exit(1);
+  }
+
+  // Calculate period
+  let period: number;
+  if (cron) {
+    period = cronToSeconds(cron);
+  } else {
+    period = parseDuration(every);
+  }
+
+  // Calculate grace: default 1/6 of period, minimum 60s
+  let graceSeconds: number;
+  if (grace) {
+    graceSeconds = parseDuration(grace);
+  } else {
+    graceSeconds = Math.max(60, Math.round(period / 6));
+  }
+
+  // Build request body
+  const body: Record<string, unknown> = { name, period, grace: graceSeconds };
+  if (cron) body.cron_expression = cron;
+  if (group) body.group_name = group;
+  if (tag) body.tags = tag;
+
+  try {
+    const data = await httpPost(`${config.server}/api/v1/checks`, config.apiKey, body);
+    const check = data.check;
+    const id = check.id;
+    const schedule = cron || periodToCron(period);
+
+    console.log(`Check created: ${check.name}`);
+    console.log(`ID: ${id}`);
+    console.log('');
+    console.log('Add to crontab:');
+    console.log(`  ${schedule} cronpulse ping ${id}`);
+    console.log('');
+    console.log('Or use wrap for auto start/fail:');
+    console.log(`  ${schedule} cronpulse wrap ${id} -- /path/to/your/script.sh`);
+    console.log('');
+    console.log('Or use curl:');
+    console.log(`  ${schedule} curl -fsS -m 10 --retry 3 ${config.server}/ping/${id}`);
+  } catch (e: any) {
+    console.error(`Error: ${e.message}`);
+    process.exit(1);
+  }
+}
 
 async function cmdPing(args: string[]) {
   const config = loadConfig();
@@ -314,6 +470,7 @@ USAGE:
   cronpulse <command> [options]
 
 COMMANDS:
+  init "Name" --every 1h        Create a check and get crontab line
   ping <id> [--start|--fail]    Send a ping signal
   wrap <id> -- <cmd> [args...]  Wrap a command (auto start/success/fail)
   list [--tag X] [--group X]    List all checks (requires API key)
@@ -321,6 +478,11 @@ COMMANDS:
   config [--api-key K] [-s URL] Configure API key and server
 
 EXAMPLES:
+  # Quick-setup: create a check and get the crontab line
+  cronpulse init "My Backup Job" --every 1h
+  cronpulse init "DB Cleanup" --cron "0 2 * * *"
+  cronpulse init "Health Check" --every 5m --grace 2m
+
   # Basic heartbeat ping from crontab
   */5 * * * * cronpulse ping abc123
 
@@ -370,6 +532,9 @@ async function main() {
   const subArgs = args.slice(1);
 
   switch (command) {
+    case 'init':
+      await cmdInit(subArgs);
+      break;
     case 'ping':
       await cmdPing(subArgs);
       break;

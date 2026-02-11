@@ -1,0 +1,146 @@
+name: "CronPulse Ping"
+description: "Monitor your GitHub Actions workflows with CronPulse. Send success, start, or fail pings to track your cron jobs."
+author: "CronPulse"
+
+branding:
+  icon: "activity"
+  color: "green"
+
+inputs:
+  check-id:
+    description: "The CronPulse check ID"
+    required: true
+  signal:
+    description: "Signal type: success, start, or fail"
+    required: false
+    default: "success"
+  server:
+    description: "CronPulse server URL"
+    required: false
+    default: "https://cron-pulse.com"
+  wrap:
+    description: "A shell command to wrap. Sends start before running, then success or fail based on exit code."
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: "Ping result: ok or failed"
+    value: ${{ steps.ping.outputs.status || steps.wrap-run.outputs.status }}
+  response-time:
+    description: "Response time in milliseconds"
+    value: ${{ steps.ping.outputs.response-time || steps.wrap-run.outputs.response-time }}
+
+runs:
+  using: "composite"
+  steps:
+    # --- Simple ping mode (no wrap) ---
+    - name: Send ping
+      id: ping
+      if: inputs.wrap == ''
+      shell: bash
+      env:
+        CRONPULSE_CHECK_ID: ${{ inputs.check-id }}
+        CRONPULSE_SIGNAL: ${{ inputs.signal }}
+        CRONPULSE_SERVER: ${{ inputs.server }}
+      run: |
+        # Build the ping URL
+        BASE_URL="${CRONPULSE_SERVER}/ping/${CRONPULSE_CHECK_ID}"
+
+        case "${CRONPULSE_SIGNAL}" in
+          success) URL="${BASE_URL}" ;;
+          start)   URL="${BASE_URL}/start" ;;
+          fail)    URL="${BASE_URL}/fail" ;;
+          *)
+            echo "::error::Invalid signal '${CRONPULSE_SIGNAL}'. Must be one of: success, start, fail"
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+            ;;
+        esac
+
+        echo "Pinging CronPulse: ${CRONPULSE_SIGNAL} -> ${URL}"
+
+        START_TIME=$(date +%s%N)
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          --max-time 10 \
+          -L \
+          -X POST \
+          "${URL}" 2>/dev/null) || true
+        END_TIME=$(date +%s%N)
+
+        # Calculate response time in ms
+        ELAPSED_NS=$((END_TIME - START_TIME))
+        ELAPSED_MS=$((ELAPSED_NS / 1000000))
+
+        echo "response-time=${ELAPSED_MS}" >> "$GITHUB_OUTPUT"
+
+        if [ "${HTTP_CODE}" = "200" ]; then
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+          echo "CronPulse ping successful (${ELAPSED_MS}ms)"
+        else
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "::warning::CronPulse ping failed with HTTP ${HTTP_CODE} (${ELAPSED_MS}ms)"
+        fi
+
+    # --- Wrap mode ---
+    - name: Wrap command
+      id: wrap-run
+      if: inputs.wrap != ''
+      shell: bash
+      env:
+        CRONPULSE_CHECK_ID: ${{ inputs.check-id }}
+        CRONPULSE_SERVER: ${{ inputs.server }}
+        CRONPULSE_WRAP_CMD: ${{ inputs.wrap }}
+      run: |
+        BASE_URL="${CRONPULSE_SERVER}/ping/${CRONPULSE_CHECK_ID}"
+        LAST_RESPONSE_TIME=0
+
+        ping_cronpulse() {
+          local signal="$1"
+          local url="${BASE_URL}"
+          [ "${signal}" != "success" ] && url="${BASE_URL}/${signal}"
+
+          local start_time=$(date +%s%N)
+          local http_code
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 10 \
+            -L \
+            -X POST \
+            "${url}" 2>/dev/null) || true
+          local end_time=$(date +%s%N)
+
+          LAST_RESPONSE_TIME=$(( (end_time - start_time) / 1000000 ))
+
+          if [ "${http_code}" = "200" ]; then
+            echo "CronPulse ${signal} ping OK (${LAST_RESPONSE_TIME}ms)"
+            return 0
+          else
+            echo "::warning::CronPulse ${signal} ping failed with HTTP ${http_code}"
+            return 1
+          fi
+        }
+
+        # 1. Send start ping
+        echo "Sending start ping..."
+        ping_cronpulse "start"
+
+        # 2. Run the wrapped command
+        echo "Running wrapped command..."
+        set +e
+        eval "${CRONPULSE_WRAP_CMD}"
+        CMD_EXIT=$?
+        set -e
+
+        # 3. Send success or fail based on exit code
+        if [ ${CMD_EXIT} -eq 0 ]; then
+          echo "Command succeeded, sending success ping..."
+          ping_cronpulse "success"
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+          echo "response-time=${LAST_RESPONSE_TIME}" >> "$GITHUB_OUTPUT"
+        else
+          echo "Command failed (exit ${CMD_EXIT}), sending fail ping..."
+          ping_cronpulse "fail"
+          echo "status=failed" >> "$GITHUB_OUTPUT"
+          echo "response-time=${LAST_RESPONSE_TIME}" >> "$GITHUB_OUTPUT"
+          exit ${CMD_EXIT}
+        fi
