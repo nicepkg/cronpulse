@@ -5,6 +5,7 @@ import auth from './routes/auth';
 import dashboard from './routes/dashboard';
 import webhooks from './routes/webhooks';
 import { checkOverdue } from './cron/check-overdue';
+import { retryFailedAlerts } from './cron/retry-alerts';
 import { cleanupAndSync } from './cron/cleanup';
 import { aggregateStats } from './cron/aggregate';
 import blog from './routes/blog';
@@ -108,6 +109,7 @@ export default {
       case '*/1 * * * *':
         // Every minute: check for overdue checks and send alerts
         ctx.waitUntil(checkOverdue(env));
+        ctx.waitUntil(retryFailedAlerts(env));
         break;
 
       case '*/5 * * * *':

@@ -62,6 +62,7 @@ function renderDocsPage(appUrl: string): string {
       <a href="#authentication">Authentication</a>
       <a href="#base-url">Base URL</a>
       <a href="#errors">Errors</a>
+      <a href="#rate-limiting">Rate limiting</a>
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Checks</p>
       <a href="#list-checks">List checks</a>
       <a href="#create-check">Create check</a>
@@ -84,6 +85,7 @@ function renderDocsPage(appUrl: string): string {
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Webhooks</p>
       <a href="#webhook-signatures">Signature verification</a>
       <a href="#webhook-events">Event types</a>
+      <a href="#webhook-retries">Automatic retries</a>
     </aside>
 
     <!-- Content -->
@@ -115,9 +117,27 @@ function renderDocsPage(appUrl: string): string {
           <tr><td><code>401</code></td><td>Missing or invalid API key</td></tr>
           <tr><td><code>403</code></td><td>Plan doesn't include API access, or check limit reached</td></tr>
           <tr><td><code>404</code></td><td>Resource not found</td></tr>
+          <tr><td><code>429</code></td><td>Rate limit exceeded (see <a href="#rate-limiting">Rate Limiting</a>)</td></tr>
           <tr><td><code>500</code></td><td>Internal server error</td></tr>
         </tbody>
       </table>
+
+      <h2 id="rate-limiting">Rate Limiting</h2>
+      <p>The API enforces a rate limit of <strong>60 requests per minute</strong> per authenticated user. Rate limit information is included in every response via headers:</p>
+      <table>
+        <thead><tr><th>Header</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>X-RateLimit-Limit</code></td><td>Maximum requests per window (60)</td></tr>
+          <tr><td><code>X-RateLimit-Remaining</code></td><td>Requests remaining in current window</td></tr>
+          <tr><td><code>Retry-After</code></td><td>Seconds until the rate limit resets (only on 429)</td></tr>
+        </tbody>
+      </table>
+      <p>When the limit is exceeded, the API returns <code>429 Too Many Requests</code>:</p>
+      <pre><code>{
+  "error": "Rate limit exceeded",
+  "retry_after": 60
+}</code></pre>
+      <p><strong>Note:</strong> The ping endpoint (<code>/ping/:id</code>) is <em>not</em> rate limited &mdash; your cron jobs can ping as frequently as needed.</p>
 
       <h2 id="list-checks">List All Checks</h2>
       <p><span class="method method-get">GET</span> <span class="endpoint">/api/v1/checks</span></p>
@@ -481,6 +501,25 @@ def verify_signature(body: bytes, signature: str, secret: str) -&gt; bool:
 }</code></pre>
 
       <p>All webhook requests include <code>Content-Type: application/json</code> and have a 5-second timeout. If you have a signing secret configured, the <code>X-CronPulse-Signature</code> header will also be included.</p>
+
+      <h2 id="webhook-retries">Webhook Automatic Retries</h2>
+      <p>If a webhook or Slack notification fails (network error, non-2xx response), CronPulse automatically retries up to <strong>3 times</strong> with exponential backoff:</p>
+      <table>
+        <thead><tr><th>Retry</th><th>Delay</th><th>Timeout</th></tr></thead>
+        <tbody>
+          <tr><td>1st retry</td><td>~30 seconds</td><td>10s</td></tr>
+          <tr><td>2nd retry</td><td>~2 minutes</td><td>10s</td></tr>
+          <tr><td>3rd retry</td><td>~8 minutes</td><td>10s</td></tr>
+        </tbody>
+      </table>
+      <p>Retry payloads include an additional <code>retry</code> field indicating the attempt number:</p>
+      <pre><code>{
+  "event": "check.down",
+  "check": { ... },
+  "timestamp": 1707786400,
+  "retry": 1
+}</code></pre>
+      <p><strong>Note:</strong> Email notifications are not retried by CronPulse as the email provider (Resend) handles its own retry logic. After 3 failed attempts, the alert is marked as permanently failed and visible in your incident timeline.</p>
 
     </main>
   </div>

@@ -186,9 +186,10 @@ async function sendDownAlert(
   } catch (e) {
     console.error(`Failed to send alert for ${check.id} via ${channel.kind}:`, e);
     if (channel.id) {
+      const shouldRetry = channel.kind === 'webhook' || channel.kind === 'slack';
       await env.DB.prepare(
-        'INSERT INTO alerts (check_id, channel_id, type, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(check.id, channel.id, 'down', 'failed', String(e), timestamp).run();
+        'INSERT INTO alerts (check_id, channel_id, type, status, error, created_at, retry_count, next_retry_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+      ).bind(check.id, channel.id, 'down', 'failed', String(e), timestamp, shouldRetry ? timestamp + 30 : null).run();
     }
   }
 }

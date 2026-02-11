@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import type { Env, User, Check } from '../types';
 import { generateCheckId } from '../utils/id';
 import { now } from '../utils/time';
+import { rateLimit } from '../middleware/rate-limit';
 
 type ApiEnv = { Bindings: Env; Variables: { user: User } };
 const api = new Hono<ApiEnv>();
@@ -55,6 +56,13 @@ api.use('*', async (c, next) => {
   c.set('user', user);
   await next();
 });
+
+// Rate limiting: 60 requests per minute per user
+api.use('*', rateLimit({
+  windowMs: 60_000,
+  max: 60,
+  keyPrefix: 'rl:api',
+}));
 
 // GET /api/v1/checks - List all checks
 api.get('/checks', async (c) => {

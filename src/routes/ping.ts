@@ -196,10 +196,11 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
       await env.DB.prepare(
         'INSERT INTO alerts (check_id, channel_id, type, status, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?)'
       ).bind(checkId, ch.id, 'recovery', 'sent', timestamp, timestamp).run();
-    } catch {
+    } catch (e) {
+      const shouldRetry = ch.kind === 'webhook' || ch.kind === 'slack';
       await env.DB.prepare(
-        'INSERT INTO alerts (check_id, channel_id, type, status, error, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(checkId, ch.id, 'recovery', 'failed', 'send error', timestamp).run();
+        'INSERT INTO alerts (check_id, channel_id, type, status, error, created_at, retry_count, next_retry_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)'
+      ).bind(checkId, ch.id, 'recovery', 'failed', String(e), timestamp, shouldRetry ? timestamp + 30 : null).run();
     }
   }
 }
