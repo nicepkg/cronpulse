@@ -32,18 +32,35 @@ dashboard.get('/', async (c) => {
   const timestamp = now();
   const day1 = timestamp - 86400;
 
-  const [checks, uptimeRows] = await Promise.all([
+  const day7 = timestamp - 7 * 86400;
+
+  const [checks, uptimeRows, alertRows] = await Promise.all([
     c.env.DB.prepare(
       'SELECT * FROM checks WHERE user_id = ? ORDER BY created_at DESC'
     ).bind(user.id).all<Check>(),
     c.env.DB.prepare(
       "SELECT check_id, COUNT(*) as total, SUM(CASE WHEN type = 'success' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id IN (SELECT id FROM checks WHERE user_id = ?) AND timestamp > ? GROUP BY check_id"
-    ).bind(user.id, day1).all<{ check_id: string; total: number; ok: number }>(),
+    ).bind(user.id, day7).all<{ check_id: string; total: number; ok: number }>(),
+    c.env.DB.prepare(
+      "SELECT check_id, COUNT(*) as count FROM alerts WHERE check_id IN (SELECT id FROM checks WHERE user_id = ?) AND type = 'down' AND created_at > ? GROUP BY check_id"
+    ).bind(user.id, day7).all<{ check_id: string; count: number }>(),
   ]);
 
   const uptimeMap: Record<string, string> = {};
+  const healthMap: Record<string, number> = {};
+  const uptimeRawMap: Record<string, { total: number; ok: number }> = {};
+  const alertCountMap: Record<string, number> = {};
+
   for (const row of uptimeRows.results) {
+    uptimeRawMap[row.check_id] = { total: row.total, ok: row.ok };
     uptimeMap[row.check_id] = row.total > 0 ? ((row.ok / row.total) * 100).toFixed(1) + '%' : '—';
+  }
+  for (const row of alertRows.results) {
+    alertCountMap[row.check_id] = row.count;
+  }
+  for (const check of checks.results) {
+    const raw = uptimeRawMap[check.id] || { total: 0, ok: 0 };
+    healthMap[check.id] = calcHealthScore(raw.total, raw.ok, alertCountMap[check.id] || 0, check.status);
   }
 
   // Collect all unique tags across checks
@@ -70,7 +87,7 @@ dashboard.get('/', async (c) => {
   if (error === 'invalid-format') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Invalid file format. Expected CronPulse JSON export.</div>`;
   if (error === 'parse-error') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Could not parse the file. Please check the format.</div>`;
 
-  return c.html(renderLayout(user, 'Checks', message + renderCheckList(filteredChecks, user, c.env.APP_URL, uptimeMap, [...allTags].sort(), tagFilter)));
+  return c.html(renderLayout(user, 'Checks', message + renderCheckList(filteredChecks, user, c.env.APP_URL, uptimeMap, [...allTags].sort(), tagFilter, healthMap)));
 });
 
 // New check form
@@ -147,7 +164,7 @@ dashboard.get('/checks/:id', async (c) => {
   const day7 = timestamp - 7 * 86400;
   const day30 = timestamp - 30 * 86400;
 
-  const [pings, alerts, uptime24h, uptime7d, uptime30d] = await Promise.all([
+  const [pings, alerts, uptime24h, uptime7d, uptime30d, alertCount7d] = await Promise.all([
     c.env.DB.prepare(
       'SELECT * FROM pings WHERE check_id = ? ORDER BY timestamp DESC LIMIT 50'
     ).bind(checkId).all(),
@@ -163,6 +180,9 @@ dashboard.get('/checks/:id', async (c) => {
     c.env.DB.prepare(
       'SELECT COUNT(*) as total, SUM(CASE WHEN type = \'success\' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id = ? AND timestamp > ?'
     ).bind(checkId, day30).first<{ total: number; ok: number }>(),
+    c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM alerts WHERE check_id = ? AND type = 'down' AND created_at > ?"
+    ).bind(checkId, day7).first<{ count: number }>(),
   ]);
 
   const uptimeStats = {
@@ -171,7 +191,14 @@ dashboard.get('/checks/:id', async (c) => {
     day30: calcUptime(uptime30d?.total ?? 0, uptime30d?.ok ?? 0),
   };
 
-  return c.html(renderLayout(user, check.name, renderCheckDetail(check, pings.results, alerts.results, c.env.APP_URL, uptimeStats)));
+  const healthScore = calcHealthScore(
+    uptime7d?.total ?? 0,
+    uptime7d?.ok ?? 0,
+    alertCount7d?.count ?? 0,
+    check.status
+  );
+
+  return c.html(renderLayout(user, check.name, renderCheckDetail(check, pings.results, alerts.results, c.env.APP_URL, uptimeStats, healthScore)));
 });
 
 // Edit check form
@@ -353,29 +380,46 @@ dashboard.post('/import', async (c) => {
 dashboard.get('/incidents', async (c) => {
   const user = c.get('user');
   const page = Math.max(1, parseInt(c.req.query('page') || '1') || 1);
+  const checkFilter = (c.req.query('check') || '').trim();
+  const typeFilter = (c.req.query('type') || '').trim().toLowerCase();
   const limit = 50;
   const offset = (page - 1) * limit;
 
-  const [alerts, totalResult] = await Promise.all([
+  // Build WHERE clause dynamically
+  let where = 'c.user_id = ?';
+  const params: any[] = [user.id];
+  if (checkFilter) {
+    where += ' AND a.check_id = ?';
+    params.push(checkFilter);
+  }
+  if (typeFilter === 'down' || typeFilter === 'recovery') {
+    where += ' AND a.type = ?';
+    params.push(typeFilter);
+  }
+
+  const [alerts, totalResult, userChecks] = await Promise.all([
     c.env.DB.prepare(`
       SELECT a.*, c.name as check_name
       FROM alerts a
       INNER JOIN checks c ON a.check_id = c.id
-      WHERE c.user_id = ?
+      WHERE ${where}
       ORDER BY a.created_at DESC
       LIMIT ? OFFSET ?
-    `).bind(user.id, limit, offset).all(),
+    `).bind(...params, limit, offset).all(),
     c.env.DB.prepare(`
       SELECT COUNT(*) as total FROM alerts a
       INNER JOIN checks c ON a.check_id = c.id
-      WHERE c.user_id = ?
-    `).bind(user.id).first<{ total: number }>(),
+      WHERE ${where}
+    `).bind(...params).first<{ total: number }>(),
+    c.env.DB.prepare(
+      'SELECT id, name FROM checks WHERE user_id = ? ORDER BY name ASC'
+    ).bind(user.id).all<{ id: string; name: string }>(),
   ]);
 
   const total = totalResult?.total || 0;
   const totalPages = Math.ceil(total / limit);
 
-  return c.html(renderLayout(user, 'Incidents', renderIncidentTimeline(alerts.results, page, totalPages, total)));
+  return c.html(renderLayout(user, 'Incidents', renderIncidentTimeline(alerts.results, page, totalPages, total, userChecks.results, checkFilter, typeFilter)));
 });
 
 // Channels page
@@ -385,7 +429,18 @@ dashboard.get('/channels', async (c) => {
     'SELECT * FROM channels WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all<Channel>();
 
-  return c.html(renderLayout(user, 'Notification Channels', renderChannels(channels.results)));
+  const testStatus = c.req.query('test');
+  const testCh = c.req.query('ch') || '';
+  const testErr = c.req.query('err') || '';
+
+  let testMessage = '';
+  if (testStatus === 'ok') {
+    testMessage = `<div class="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">Test notification sent to <strong>${escapeHtml(testCh)}</strong> successfully!</div>`;
+  } else if (testStatus === 'fail') {
+    testMessage = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Failed to send test to <strong>${escapeHtml(testCh)}</strong>${testErr ? `: ${escapeHtml(testErr)}` : ''}.</div>`;
+  }
+
+  return c.html(renderLayout(user, 'Notification Channels', testMessage + renderChannels(channels.results)));
 });
 
 // Create channel
@@ -417,6 +472,94 @@ dashboard.post('/channels', async (c) => {
   ).bind(id, user.id, kind, target, name, isDefault, now()).run();
 
   return c.redirect('/dashboard/channels');
+});
+
+// Test channel — send a test notification
+dashboard.post('/channels/:id/test', async (c) => {
+  const user = c.get('user');
+  const channelId = c.req.param('id');
+
+  const channel = await c.env.DB.prepare(
+    'SELECT * FROM channels WHERE id = ? AND user_id = ?'
+  ).bind(channelId, user.id).first<Channel>();
+
+  if (!channel) return c.redirect('/dashboard/channels');
+
+  let success = false;
+  let errorMsg = '';
+
+  try {
+    if (channel.kind === 'email') {
+      const { sendEmail, htmlEmail } = await import('../services/email');
+      const result = await sendEmail(c.env, {
+        to: channel.target,
+        subject: '[CronPulse] Test Notification',
+        text: 'This is a test notification from CronPulse. If you received this, your email channel is working correctly!',
+        html: htmlEmail({
+          title: 'Test Notification',
+          heading: 'Test Notification',
+          body: '<p style="margin:0 0 12px"><strong style="color:#2563eb">Your email channel is working correctly!</strong></p><p style="margin:0;color:#374151;font-size:13px">This is a test notification from CronPulse. No action is required.</p>',
+          ctaUrl: `${c.env.APP_URL}/dashboard/channels`,
+          ctaText: 'View Channels',
+        }),
+      });
+      success = result.sent || result.demo;
+      if (!success) errorMsg = result.error || 'Unknown error';
+    } else if (channel.kind === 'webhook') {
+      const res = await fetch(channel.target, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'test',
+          message: 'This is a test notification from CronPulse.',
+          timestamp: now(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      success = res.ok;
+      if (!success) errorMsg = `HTTP ${res.status}`;
+    } else if (channel.kind === 'slack') {
+      const res = await fetch(channel.target, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'CronPulse Test Notification',
+          blocks: [
+            {
+              type: 'header',
+              text: { type: 'plain_text', text: 'CronPulse Test Notification', emoji: true },
+            },
+            {
+              type: 'section',
+              fields: [
+                { type: 'mrkdwn', text: '*Status:*\nTest' },
+                { type: 'mrkdwn', text: '*Result:*\nYour Slack channel is working!' },
+              ],
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'View Channels', emoji: true },
+                  url: `${c.env.APP_URL}/dashboard/channels`,
+                },
+              ],
+            },
+          ],
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      success = res.ok;
+      if (!success) errorMsg = `HTTP ${res.status}`;
+    }
+  } catch (e) {
+    success = false;
+    errorMsg = String(e);
+  }
+
+  const status = success ? 'ok' : 'fail';
+  return c.redirect(`/dashboard/channels?test=${status}&ch=${encodeURIComponent(channel.name || channel.kind)}${errorMsg ? `&err=${encodeURIComponent(errorMsg)}` : ''}`);
 });
 
 // Delete channel
@@ -486,6 +629,27 @@ dashboard.post('/settings/api-key', async (c) => {
 function calcUptime(total: number, ok: number): string {
   if (total === 0) return '—';
   return ((ok / total) * 100).toFixed(1) + '%';
+}
+
+function calcHealthScore(totalPings: number, okPings: number, alertCount: number, status: string): number {
+  if (status === 'paused') return -1; // Not applicable
+  if (status === 'new' || totalPings === 0) return -1; // No data yet
+  // Uptime component: 0-70 points
+  const uptimePct = totalPings > 0 ? (okPings / totalPings) : 1;
+  const uptimeScore = Math.round(uptimePct * 70);
+  // Alert frequency component: 0-30 points (0 alerts = 30, 5+ alerts = 0)
+  const alertScore = Math.max(0, 30 - (alertCount * 6));
+  return Math.min(100, uptimeScore + alertScore);
+}
+
+function healthScoreBadge(score: number): string {
+  if (score < 0) return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">N/A</span>';
+  let color = 'bg-green-100 text-green-800';
+  let label = 'Excellent';
+  if (score < 60) { color = 'bg-red-100 text-red-800'; label = 'Poor'; }
+  else if (score < 80) { color = 'bg-yellow-100 text-yellow-800'; label = 'Fair'; }
+  else if (score < 95) { color = 'bg-blue-100 text-blue-800'; label = 'Good'; }
+  return `<span class="px-2 py-0.5 rounded text-xs font-medium ${color}" title="Health score: ${score}/100">${score} ${label}</span>`;
 }
 
 function uptimeColor(pct: string): string {
@@ -565,7 +729,7 @@ function statusBadge(status: string): string {
   return `<span class="px-2 py-0.5 rounded text-xs font-medium ${colors[status] || colors.new}">${status}</span>`;
 }
 
-function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string): string {
+function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string, healthMap?: Record<string, number>): string {
   const tagFilterBar = allTags && allTags.length > 0 ? `
     <div class="flex flex-wrap items-center gap-2 mb-4">
       <span class="text-xs text-gray-500 font-medium">Filter:</span>
@@ -608,7 +772,8 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
     ` : `
       <div class="bg-white rounded-lg border divide-y">
         ${checks.map(check => {
-          const uptime24h = uptimeMap?.[check.id] || '—';
+          const uptime7d = uptimeMap?.[check.id] || '—';
+          const hs = healthMap?.[check.id] ?? -1;
           return `
           <a href="/dashboard/checks/${check.id}" class="block px-3 sm:px-4 py-3 hover:bg-gray-50">
             <div class="flex items-center justify-between">
@@ -616,7 +781,8 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
                 <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
                 ${statusBadge(check.status)}
                 ${renderTagPills(check.tags)}
-                <span class="text-xs font-medium ${uptimeColor(uptime24h)} hidden sm:inline" title="24h uptime">${uptime24h}</span>
+                <span class="text-xs font-medium ${uptimeColor(uptime7d)} hidden sm:inline" title="7d uptime">${uptime7d}</span>
+                <span class="hidden sm:inline">${healthScoreBadge(hs)}</span>
               </div>
               <div class="text-xs sm:text-sm text-gray-400 whitespace-nowrap ml-2">
                 ${check.last_ping_at ? timeAgo(check.last_ping_at) : 'Never'}
@@ -670,13 +836,17 @@ function renderCheckForm(check?: Check): string {
     </div>`;
 }
 
-function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: string, uptime?: { day1: string; day7: string; day30: string }): string {
+function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: string, uptime?: { day1: string; day7: string; day30: string }, healthScore?: number): string {
   const pingUrl = `${appUrl}/ping/${check.id}`;
   const up = uptime || { day1: '—', day7: '—', day30: '—' };
+  const hs = healthScore ?? -1;
   return `
     <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
       <div>
-        <h1 class="text-xl sm:text-2xl font-bold">${escapeHtml(check.name)}</h1>
+        <div class="flex items-center gap-3">
+          <h1 class="text-xl sm:text-2xl font-bold">${escapeHtml(check.name)}</h1>
+          ${healthScoreBadge(hs)}
+        </div>
         ${check.tags ? `<div class="flex flex-wrap gap-1 mt-1">${renderTagPills(check.tags)}</div>` : ''}
         <span class="text-sm text-gray-500">ID: ${check.id}</span>
       </div>
@@ -822,7 +992,7 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
     </div>`;
 }
 
-function renderIncidentTimeline(alerts: any[], page: number, totalPages: number, total: number): string {
+function renderIncidentTimeline(alerts: any[], page: number, totalPages: number, total: number, checks?: { id: string; name: string }[], checkFilter?: string, typeFilter?: string): string {
   // Group alerts by date
   const grouped: Record<string, any[]> = {};
   for (const alert of alerts) {
@@ -831,24 +1001,58 @@ function renderIncidentTimeline(alerts: any[], page: number, totalPages: number,
     grouped[date].push(alert);
   }
 
+  // Build query string for pagination links, preserving filters
+  function qs(p: number): string {
+    const parts: string[] = [`page=${p}`];
+    if (checkFilter) parts.push(`check=${encodeURIComponent(checkFilter)}`);
+    if (typeFilter) parts.push(`type=${encodeURIComponent(typeFilter)}`);
+    return parts.join('&');
+  }
+
   const pagination = totalPages > 1 ? `
     <div class="flex items-center justify-between mt-6 text-sm">
       <span class="text-gray-500">${total} incidents total</span>
       <div class="flex items-center gap-2">
-        ${page > 1 ? `<a href="/dashboard/incidents?page=${page - 1}" class="px-3 py-1 border rounded hover:bg-gray-50">Prev</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Prev</span>`}
+        ${page > 1 ? `<a href="/dashboard/incidents?${qs(page - 1)}" class="px-3 py-1 border rounded hover:bg-gray-50">Prev</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Prev</span>`}
         <span class="text-gray-600">Page ${page} of ${totalPages}</span>
-        ${page < totalPages ? `<a href="/dashboard/incidents?page=${page + 1}" class="px-3 py-1 border rounded hover:bg-gray-50">Next</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Next</span>`}
+        ${page < totalPages ? `<a href="/dashboard/incidents?${qs(page + 1)}" class="px-3 py-1 border rounded hover:bg-gray-50">Next</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Next</span>`}
       </div>
     </div>
   ` : '';
+
+  const hasFilters = checkFilter || typeFilter;
+
+  const filterBar = `
+    <form method="GET" action="/dashboard/incidents" class="flex flex-wrap items-end gap-3 mb-6 bg-white rounded-lg border p-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Check</label>
+        <select name="check" class="px-3 py-1.5 border rounded-md text-sm">
+          <option value="">All checks</option>
+          ${(checks || []).map(ch => `<option value="${ch.id}" ${checkFilter === ch.id ? 'selected' : ''}>${escapeHtml(ch.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-500 mb-1">Type</label>
+        <select name="type" class="px-3 py-1.5 border rounded-md text-sm">
+          <option value="">All types</option>
+          <option value="down" ${typeFilter === 'down' ? 'selected' : ''}>Down</option>
+          <option value="recovery" ${typeFilter === 'recovery' ? 'selected' : ''}>Recovery</option>
+        </select>
+      </div>
+      <button type="submit" class="px-4 py-1.5 bg-blue-600 text-white rounded-md text-sm font-medium hover:bg-blue-700">Filter</button>
+      ${hasFilters ? `<a href="/dashboard/incidents" class="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700">Clear</a>` : ''}
+    </form>
+  `;
 
   return `
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-bold">Incident Timeline</h1>
     </div>
+    ${filterBar}
     ${alerts.length === 0 ? `
       <div class="bg-white rounded-lg border p-12 text-center">
-        <p class="text-gray-500">No incidents yet. Your checks are running smoothly!</p>
+        <p class="text-gray-500">${hasFilters ? 'No incidents match your filters.' : 'No incidents yet. Your checks are running smoothly!'}</p>
+        ${hasFilters ? '<a href="/dashboard/incidents" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Clear filters</a>' : ''}
       </div>
     ` : `
       <div class="space-y-6">
@@ -945,9 +1149,14 @@ function renderChannels(channels: Channel[]): string {
                 ${ch.is_default ? '<span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded ml-2">default</span>' : ''}
                 <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(ch.target)}</p>
               </div>
-              <form method="POST" action="/dashboard/channels/${ch.id}/delete" style="display:inline">
-                <button class="text-red-500 text-xs hover:underline">Delete</button>
-              </form>
+              <div class="flex items-center gap-3 shrink-0">
+                <form method="POST" action="/dashboard/channels/${ch.id}/test" style="display:inline">
+                  <button class="text-blue-600 text-xs hover:underline">Test</button>
+                </form>
+                <form method="POST" action="/dashboard/channels/${ch.id}/delete" style="display:inline">
+                  <button class="text-red-500 text-xs hover:underline">Delete</button>
+                </form>
+              </div>
             </div>
           `).join('')}
         </div>
