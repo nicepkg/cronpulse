@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env, CheckConfig } from '../types';
 import { now } from '../utils/time';
-import { sendEmail } from '../services/email';
+import { sendEmail, htmlEmail } from '../services/email';
 
 const ping = new Hono<{ Bindings: Env }>();
 
@@ -114,7 +114,9 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
         env,
         user.email as string,
         `[CronPulse] ${(check as any).name} is back UP`,
-        `Your check "${(check as any).name}" has recovered and is now reporting as UP.`
+        `Your check "${(check as any).name}" has recovered and is now reporting as UP.`,
+        (check as any).name,
+        `${env.APP_URL}/dashboard/checks/${checkId}`
       );
     }
     return;
@@ -128,7 +130,9 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
           env,
           ch.target,
           `[CronPulse] ${(check as any).name} is back UP`,
-          `Your check "${(check as any).name}" has recovered and is now reporting as UP.`
+          `Your check "${(check as any).name}" has recovered and is now reporting as UP.`,
+          (check as any).name,
+          `${env.APP_URL}/dashboard/checks/${checkId}`
         );
       } else if (ch.kind === 'webhook') {
         await fetch(ch.target, {
@@ -153,8 +157,19 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
   }
 }
 
-async function sendAlertEmail(env: Env, to: string, subject: string, text: string) {
-  await sendEmail(env, { to, subject, text });
+async function sendAlertEmail(env: Env, to: string, subject: string, text: string, checkName?: string, detailUrl?: string) {
+  await sendEmail(env, {
+    to,
+    subject,
+    text,
+    html: htmlEmail({
+      title: subject,
+      heading: checkName ? `${checkName} is back UP` : subject,
+      body: `<p style="margin:0;color:#059669"><strong>Your check has recovered and is now reporting as UP.</strong></p>`,
+      ctaUrl: detailUrl,
+      ctaText: detailUrl ? 'View Check Details' : undefined,
+    }),
+  });
 }
 
 export default ping;

@@ -1,6 +1,6 @@
 import type { Env } from '../types';
 import { now } from '../utils/time';
-import { sendEmail } from '../services/email';
+import { sendEmail, htmlEmail } from '../services/email';
 
 export async function checkOverdue(env: Env) {
   const timestamp = now();
@@ -80,10 +80,26 @@ async function sendDownAlert(
 ) {
   try {
     if (channel.kind === 'email') {
+      const lastPing = check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString() : 'never';
+      const detailUrl = `${env.APP_URL}/dashboard/checks/${check.id}`;
       await sendEmail(env, {
         to: channel.target,
         subject: `[CronPulse] ${check.name} is DOWN`,
-        text: `Your check "${check.name}" has not reported in on time.\n\nExpected ping every ${formatPeriod(check.period)} with ${formatPeriod(check.grace)} grace period.\n\nLast ping: ${check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString() : 'never'}\n\nView details: ${env.APP_URL}/dashboard/checks/${check.id}`,
+        text: `Your check "${check.name}" has not reported in on time.\n\nExpected ping every ${formatPeriod(check.period)} with ${formatPeriod(check.grace)} grace period.\n\nLast ping: ${lastPing}\n\nView details: ${detailUrl}`,
+        html: htmlEmail({
+          title: `${check.name} is DOWN`,
+          heading: `${check.name} is DOWN`,
+          body: `
+            <p style="margin:0 0 12px"><strong style="color:#dc2626">Your check has not reported in on time.</strong></p>
+            <table style="width:100%;font-size:13px;color:#374151">
+              <tr><td style="padding:4px 0;color:#6b7280">Check</td><td style="padding:4px 0;font-weight:600">${check.name}</td></tr>
+              <tr><td style="padding:4px 0;color:#6b7280">Expected every</td><td style="padding:4px 0">${formatPeriod(check.period)}</td></tr>
+              <tr><td style="padding:4px 0;color:#6b7280">Grace period</td><td style="padding:4px 0">${formatPeriod(check.grace)}</td></tr>
+              <tr><td style="padding:4px 0;color:#6b7280">Last ping</td><td style="padding:4px 0">${lastPing}</td></tr>
+            </table>`,
+          ctaUrl: detailUrl,
+          ctaText: 'View Check Details',
+        }),
       });
     } else if (channel.kind === 'webhook') {
       await fetch(channel.target, {

@@ -3,7 +3,7 @@ import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import type { Env, User } from '../types';
 import { generateId, generateToken, generateSessionId } from '../utils/id';
 import { now } from '../utils/time';
-import { sendEmail } from '../services/email';
+import { sendEmail, htmlEmail } from '../services/email';
 
 const auth = new Hono<{ Bindings: Env }>();
 
@@ -49,6 +49,14 @@ auth.post('/login', async (c) => {
     to: email,
     subject: 'Your CronPulse Login Link',
     text: `Click here to log in to CronPulse:\n\n${magicLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.`,
+    html: htmlEmail({
+      title: 'Your CronPulse Login Link',
+      heading: 'Sign in to CronPulse',
+      body: `<p style="margin:0 0 8px">Click the button below to sign in. This link expires in 15 minutes.</p>
+        <p style="margin:0;font-size:12px;color:#6b7280">If you didn't request this, you can safely ignore this email.</p>`,
+      ctaUrl: magicLink,
+      ctaText: 'Sign In',
+    }),
   });
 
   // If email was sent successfully, show "check your email" page
@@ -114,6 +122,13 @@ auth.get('/verify', async (c) => {
       utm_campaign: utmCampaign || undefined,
       referer,
     }));
+
+    // Record signup for analytics dashboard
+    try {
+      await c.env.DB.prepare(
+        'INSERT INTO signups (user_id, email, utm_source, utm_medium, utm_campaign, referrer, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).bind(userId, email, utmSource, utmMedium, utmCampaign, referer, timestamp).run();
+    } catch { /* analytics write failure is acceptable */ }
 
     // Fire-and-forget signup webhook notification
     if (c.env.SIGNUP_WEBHOOK_URL) {
@@ -258,8 +273,8 @@ function renderDemoLinkPage(email: string, magicLink: string): string {
 <body class="bg-gray-50 min-h-screen flex items-center justify-center">
   <div class="max-w-md w-full p-8 text-center">
     <div class="bg-white rounded-lg shadow-sm border p-8">
-      <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6">
-        <p class="text-amber-800 text-xs font-medium">Early Preview — Email delivery not yet configured</p>
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6">
+        <p class="text-blue-800 text-xs font-medium">Direct login link (email could not be delivered)</p>
       </div>
       <h2 class="text-xl font-semibold mb-2">Your login link</h2>
       <p class="text-gray-600 text-sm mb-4">Click the link below to sign in as <strong>${escapeHtml(email)}</strong></p>

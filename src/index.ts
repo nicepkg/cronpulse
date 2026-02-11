@@ -11,6 +11,7 @@ import blog from './routes/blog';
 import docsRoute from './routes/docs';
 import api from './routes/api';
 import status from './routes/status';
+import analytics from './routes/analytics';
 import { renderLandingPage } from './views/landing';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -36,6 +37,9 @@ app.route('/docs', docsRoute);
 // Status page (public)
 app.route('/status', status);
 
+// Analytics (admin only, requires SESSION_SECRET as key)
+app.route('/analytics', analytics);
+
 // API v1 (API key auth)
 app.route('/api/v1', api);
 
@@ -54,6 +58,7 @@ Disallow: /dashboard/
 Disallow: /api/
 Disallow: /auth/
 Disallow: /webhooks/
+Disallow: /analytics/
 
 Sitemap: ${c.env.APP_URL}/sitemap.xml`);
 });

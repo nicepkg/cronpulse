@@ -5,7 +5,41 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CronPulse — Cron Job Monitoring Made Simple</title>
-  <meta name="description" content="Monitor your cron jobs with a single curl. Get alerted when they fail. Free for up to 10 checks.">
+  <meta name="description" content="Monitor your cron jobs with a single curl. Get instant email, Slack, and webhook alerts when they fail. Open source. Free for up to 10 checks.">
+  <link rel="canonical" href="${appUrl}">
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${appUrl}">
+  <meta property="og:title" content="CronPulse — Know When Your Cron Jobs Fail">
+  <meta property="og:description" content="Add one curl to your cron job. Get alerted via email, Slack, or webhook when it stops. Open source, runs on Cloudflare's edge. Free tier available.">
+  <meta property="og:site_name" content="CronPulse">
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CronPulse — Know When Your Cron Jobs Fail">
+  <meta name="twitter:description" content="Add one curl to your cron job. Get alerted via email, Slack, or webhook when it stops. Open source, runs on Cloudflare's edge.">
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "CronPulse",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Web",
+    "url": "${appUrl}",
+    "description": "Open source cron job monitoring. Get email, Slack, and webhook alerts when your cron jobs fail.",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD",
+      "description": "Free tier with 10 checks"
+    },
+    "creator": {
+      "@type": "Organization",
+      "name": "CronPulse",
+      "url": "${appUrl}"
+    }
+  }
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-white">
@@ -27,10 +61,10 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
     </div>
   </nav>
 
-  <!-- Early Preview Banner -->
-  <div class="bg-amber-50 border-b border-amber-200">
+  <!-- Open Source Banner -->
+  <div class="bg-green-50 border-b border-green-200">
     <div class="max-w-5xl mx-auto px-4 py-2 text-center">
-      <p class="text-amber-800 text-sm">Early Preview — Fully functional, free to try. Email alerts coming soon.</p>
+      <p class="text-green-800 text-sm">Open Source &amp; Free — Email, Slack, and webhook alerts are live. <a href="https://github.com/nicepkg/cronpulse" class="underline font-medium hover:text-green-900" target="_blank" rel="noopener">Star us on GitHub</a></p>
     </div>
   </div>
 
