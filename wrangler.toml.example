@@ -1,0 +1,26 @@
+name = "cronpulse"
+main = "src/index.ts"
+compatibility_date = "2026-02-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/1 * * * *", "*/5 * * * *", "0 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cronpulse-prod"
+database_id = "<YOUR_D1_DATABASE_ID>"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "<YOUR_KV_NAMESPACE_ID>"
+
+[vars]
+ENVIRONMENT = "production"
+APP_URL = "https://your-worker.your-subdomain.workers.dev"
+LEMONSQUEEZY_STORE_URL = ""
+
+# Secrets (set via `wrangler secret put`):
+# RESEND_API_KEY     — Resend.com API key for email alerts (optional, demo mode if unset)
+# SESSION_SECRET     — Random string for session signing
+# LEMONSQUEEZY_WEBHOOK_SECRET — LemonSqueezy webhook verification (optional)
