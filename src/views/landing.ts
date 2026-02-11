@@ -203,6 +203,25 @@ export function renderLandingPage(appUrl: string = 'https://cronpulse.dev'): str
   <footer class="py-8 text-center text-sm text-gray-400">
     <p>&copy; 2026 CronPulse. <a href="https://github.com/nicepkg/cronpulse" class="hover:text-gray-600">Open Source</a> &middot; Built on Cloudflare.</p>
   </footer>
+  <script>
+  (function(){
+    var p=new URLSearchParams(location.search);
+    var u={};
+    ['utm_source','utm_medium','utm_campaign'].forEach(function(k){
+      var v=p.get(k);if(v)u[k]=v;
+    });
+    var keys=Object.keys(u);
+    if(!keys.length)return;
+    var qs=keys.map(function(k){return k+'='+encodeURIComponent(u[k])}).join('&');
+    document.querySelectorAll('a[href^="/auth/login"]').forEach(function(a){
+      var href=a.getAttribute('href');
+      a.setAttribute('href',href+(href.indexOf('?')>-1?'&':'?')+qs);
+    });
+    try{sessionStorage.setItem('cronpulse_utm',JSON.stringify(u));
+      if(document.referrer)sessionStorage.setItem('cronpulse_referrer',document.referrer);
+    }catch(e){}
+  })();
+  </script>
 </body>
 </html>`;
 }

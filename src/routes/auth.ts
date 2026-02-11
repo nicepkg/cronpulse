@@ -12,6 +12,11 @@ auth.post('/login', async (c) => {
   const body = await c.req.parseBody();
   const email = (body.email as string || '').trim().toLowerCase();
 
+  // Collect UTM params from form body (forwarded from landing page)
+  const utmSource = (body.utm_source as string || '').trim();
+  const utmMedium = (body.utm_medium as string || '').trim();
+  const utmCampaign = (body.utm_campaign as string || '').trim();
+
   if (!email || !email.includes('@')) {
     return c.html(renderLoginPage('Please enter a valid email address.'), 400);
   }
@@ -33,8 +38,12 @@ auth.post('/login', async (c) => {
     'INSERT INTO auth_tokens (token, email, expires_at) VALUES (?, ?, ?)'
   ).bind(token, email, expiresAt).run();
 
-  // Send magic link email
-  const magicLink = `${c.env.APP_URL}/auth/verify?token=${token}`;
+  // Send magic link email — append UTM params so verify handler can log them
+  const verifyParams = new URLSearchParams({ token });
+  if (utmSource) verifyParams.set('utm_source', utmSource);
+  if (utmMedium) verifyParams.set('utm_medium', utmMedium);
+  if (utmCampaign) verifyParams.set('utm_campaign', utmCampaign);
+  const magicLink = `${c.env.APP_URL}/auth/verify?${verifyParams.toString()}`;
 
   const result = await sendEmail(c.env, {
     to: email,
@@ -88,6 +97,42 @@ auth.get('/verify', async (c) => {
     ).bind(channelId, userId, 'email', email, 'Email', 1, timestamp).run();
 
     user = { id: userId, email, plan: 'free', check_limit: 10, api_key_hash: null, timezone: 'UTC', created_at: timestamp, updated_at: timestamp };
+
+    // Capture acquisition source from UTM params and referrer
+    const utmSource = c.req.query('utm_source') || '';
+    const utmMedium = c.req.query('utm_medium') || '';
+    const utmCampaign = c.req.query('utm_campaign') || '';
+    const referer = c.req.header('Referer') || 'direct';
+
+    // Log new signup with source — visible via `wrangler tail`
+    console.log('[NEW_SIGNUP]', JSON.stringify({
+      email,
+      userId,
+      timestamp: new Date(timestamp * 1000).toISOString(),
+      utm_source: utmSource || undefined,
+      utm_medium: utmMedium || undefined,
+      utm_campaign: utmCampaign || undefined,
+      referer,
+    }));
+
+    // Fire-and-forget signup webhook notification
+    if (c.env.SIGNUP_WEBHOOK_URL) {
+      c.executionCtx.waitUntil(
+        fetch(c.env.SIGNUP_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'user.signup',
+            email,
+            timestamp,
+            utm_source: utmSource || undefined,
+            utm_medium: utmMedium || undefined,
+            utm_campaign: utmCampaign || undefined,
+            referer,
+          }),
+        }).catch(() => {})
+      );
+    }
   }
 
   // Create session
@@ -120,7 +165,13 @@ auth.get('/login', async (c) => {
     if (session) return c.redirect('/dashboard');
   }
 
-  return c.html(renderLoginPage());
+  // Forward UTM params from query string to the login form
+  const utmParams: Record<string, string> = {};
+  for (const key of ['utm_source', 'utm_medium', 'utm_campaign']) {
+    const val = c.req.query(key);
+    if (val) utmParams[key] = val;
+  }
+  return c.html(renderLoginPage(undefined, utmParams));
 });
 
 // POST /auth/logout
@@ -133,7 +184,10 @@ auth.post('/logout', async (c) => {
   return c.redirect('/');
 });
 
-function renderLoginPage(error?: string): string {
+function renderLoginPage(error?: string, utmParams?: Record<string, string>): string {
+  const utmFields = utmParams
+    ? Object.entries(utmParams).map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`).join('\n        ')
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -152,6 +206,7 @@ function renderLoginPage(error?: string): string {
       <h2 class="text-lg font-semibold mb-4">Sign in to your account</h2>
       ${error ? `<div class="bg-red-50 text-red-700 p-3 rounded mb-4 text-sm">${escapeHtml(error)}</div>` : ''}
       <form method="POST" action="/auth/login">
+        ${utmFields}
         <label class="block text-sm font-medium text-gray-700 mb-1">Email address</label>
         <input type="email" name="email" required autofocus
           class="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"

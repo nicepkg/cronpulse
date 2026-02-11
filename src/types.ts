@@ -7,6 +7,7 @@ export interface Env {
   LEMONSQUEEZY_STORE_URL: string;
   ENVIRONMENT: string;
   APP_URL: string;
+  SIGNUP_WEBHOOK_URL: string;
 }
 
 export interface User {
