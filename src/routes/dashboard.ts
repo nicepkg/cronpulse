@@ -87,15 +87,36 @@ dashboard.get('/checks/:id', async (c) => {
 
   if (!check) return c.redirect('/dashboard');
 
-  const pings = await c.env.DB.prepare(
-    'SELECT * FROM pings WHERE check_id = ? ORDER BY timestamp DESC LIMIT 50'
-  ).bind(checkId).all();
+  const timestamp = now();
+  const day1 = timestamp - 86400;
+  const day7 = timestamp - 7 * 86400;
+  const day30 = timestamp - 30 * 86400;
 
-  const alerts = await c.env.DB.prepare(
-    'SELECT * FROM alerts WHERE check_id = ? ORDER BY created_at DESC LIMIT 20'
-  ).bind(checkId).all();
+  const [pings, alerts, uptime24h, uptime7d, uptime30d] = await Promise.all([
+    c.env.DB.prepare(
+      'SELECT * FROM pings WHERE check_id = ? ORDER BY timestamp DESC LIMIT 50'
+    ).bind(checkId).all(),
+    c.env.DB.prepare(
+      'SELECT * FROM alerts WHERE check_id = ? ORDER BY created_at DESC LIMIT 20'
+    ).bind(checkId).all(),
+    c.env.DB.prepare(
+      'SELECT COUNT(*) as total, SUM(CASE WHEN type = \'success\' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id = ? AND timestamp > ?'
+    ).bind(checkId, day1).first<{ total: number; ok: number }>(),
+    c.env.DB.prepare(
+      'SELECT COUNT(*) as total, SUM(CASE WHEN type = \'success\' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id = ? AND timestamp > ?'
+    ).bind(checkId, day7).first<{ total: number; ok: number }>(),
+    c.env.DB.prepare(
+      'SELECT COUNT(*) as total, SUM(CASE WHEN type = \'success\' THEN 1 ELSE 0 END) as ok FROM pings WHERE check_id = ? AND timestamp > ?'
+    ).bind(checkId, day30).first<{ total: number; ok: number }>(),
+  ]);
 
-  return c.html(renderLayout(user, check.name, renderCheckDetail(check, pings.results, alerts.results, c.env.APP_URL)));
+  const uptimeStats = {
+    day1: calcUptime(uptime24h?.total ?? 0, uptime24h?.ok ?? 0),
+    day7: calcUptime(uptime7d?.total ?? 0, uptime7d?.ok ?? 0),
+    day30: calcUptime(uptime30d?.total ?? 0, uptime30d?.ok ?? 0),
+  };
+
+  return c.html(renderLayout(user, check.name, renderCheckDetail(check, pings.results, alerts.results, c.env.APP_URL, uptimeStats)));
 });
 
 // Edit check form
@@ -282,6 +303,40 @@ dashboard.post('/settings/api-key', async (c) => {
   `));
 });
 
+// --- Helpers ---
+
+function calcUptime(total: number, ok: number): string {
+  if (total === 0) return '—';
+  return ((ok / total) * 100).toFixed(1) + '%';
+}
+
+function uptimeColor(pct: string): string {
+  if (pct === '—') return 'text-gray-400';
+  const n = parseFloat(pct);
+  if (n >= 99.5) return 'text-green-600';
+  if (n >= 95) return 'text-yellow-600';
+  return 'text-red-600';
+}
+
+function renderSparkline(pings: any[]): string {
+  // Take last 30 pings, oldest first
+  const recent = pings.slice(0, 30).reverse();
+  if (recent.length === 0) return '<p class="text-sm text-gray-400">No data yet</p>';
+
+  const barW = 8;
+  const gap = 2;
+  const h = 32;
+  const totalW = recent.length * (barW + gap) - gap;
+
+  const bars = recent.map((p: any, i: number) => {
+    const x = i * (barW + gap);
+    const color = p.type === 'success' ? '#22c55e' : '#ef4444';
+    return `<rect x="${x}" y="0" width="${barW}" height="${h}" rx="2" fill="${color}" opacity="0.85"><title>${new Date(p.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)} — ${p.type}</title></rect>`;
+  }).join('');
+
+  return `<svg width="${totalW}" height="${h}" viewBox="0 0 ${totalW} ${h}" class="inline-block">${bars}</svg>`;
+}
+
 // --- View Renderers ---
 
 function renderLayout(user: User, title: string, content: string): string {
@@ -295,23 +350,26 @@ function renderLayout(user: User, title: string, content: string): string {
 </head>
 <body class="bg-gray-50 min-h-screen">
   <nav class="bg-white border-b">
-    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-      <div class="flex items-center gap-6">
+    <div class="max-w-5xl mx-auto px-4 py-3">
+      <div class="flex items-center justify-between">
         <a href="/dashboard" class="text-lg font-bold text-gray-900">CronPulse</a>
-        <a href="/dashboard" class="text-sm text-gray-600 hover:text-gray-900">Checks</a>
-        <a href="/dashboard/channels" class="text-sm text-gray-600 hover:text-gray-900">Channels</a>
-        <a href="/dashboard/billing" class="text-sm text-gray-600 hover:text-gray-900">Billing</a>
-        <a href="/dashboard/settings" class="text-sm text-gray-600 hover:text-gray-900">Settings</a>
+        <div class="flex items-center gap-2 sm:gap-4">
+          <span class="text-xs text-gray-400 hidden sm:inline">${escapeHtml(user.email)}</span>
+          <span class="text-xs text-gray-400 capitalize">${user.plan}</span>
+          <form method="POST" action="/auth/logout" style="display:inline">
+            <button type="submit" class="text-sm text-gray-500 hover:text-gray-700">Logout</button>
+          </form>
+        </div>
       </div>
-      <div class="flex items-center gap-4">
-        <span class="text-xs text-gray-400">${user.email} (${user.plan})</span>
-        <form method="POST" action="/auth/logout" style="display:inline">
-          <button type="submit" class="text-sm text-gray-500 hover:text-gray-700">Logout</button>
-        </form>
+      <div class="flex items-center gap-4 mt-2 overflow-x-auto text-sm">
+        <a href="/dashboard" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Checks</a>
+        <a href="/dashboard/channels" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Channels</a>
+        <a href="/dashboard/billing" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Billing</a>
+        <a href="/dashboard/settings" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Settings</a>
       </div>
     </div>
   </nav>
-  <main class="max-w-5xl mx-auto px-4 py-8">
+  <main class="max-w-5xl mx-auto px-4 py-6 sm:py-8">
     ${content}
   </main>
 </body>
@@ -345,14 +403,16 @@ function renderCheckList(checks: Check[], user: User, appUrl: string): string {
     ` : `
       <div class="bg-white rounded-lg border divide-y">
         ${checks.map(check => `
-          <a href="/dashboard/checks/${check.id}" class="block px-4 py-3 hover:bg-gray-50 flex items-center justify-between">
-            <div>
-              <span class="font-medium text-gray-900">${escapeHtml(check.name)}</span>
-              ${statusBadge(check.status)}
-            </div>
-            <div class="text-sm text-gray-400">
-              ${check.last_ping_at ? timeAgo(check.last_ping_at) : 'Never pinged'}
-              &middot; every ${formatDuration(check.period)}
+          <a href="/dashboard/checks/${check.id}" class="block px-3 sm:px-4 py-3 hover:bg-gray-50">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
+                ${statusBadge(check.status)}
+              </div>
+              <div class="text-xs sm:text-sm text-gray-400 whitespace-nowrap ml-2">
+                ${check.last_ping_at ? timeAgo(check.last_ping_at) : 'Never'}
+                &middot; ${formatDuration(check.period)}
+              </div>
             </div>
           </a>
         `).join('')}
@@ -395,15 +455,16 @@ function renderCheckForm(check?: Check): string {
     </div>`;
 }
 
-function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: string): string {
+function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: string, uptime?: { day1: string; day7: string; day30: string }): string {
   const pingUrl = `${appUrl}/ping/${check.id}`;
+  const up = uptime || { day1: '—', day7: '—', day30: '—' };
   return `
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
       <div>
-        <h1 class="text-2xl font-bold">${escapeHtml(check.name)}</h1>
+        <h1 class="text-xl sm:text-2xl font-bold">${escapeHtml(check.name)}</h1>
         <span class="text-sm text-gray-500">ID: ${check.id}</span>
       </div>
-      <div class="flex gap-2">
+      <div class="flex flex-wrap gap-2">
         <a href="/dashboard/checks/${check.id}/edit" class="px-3 py-1.5 border rounded text-sm hover:bg-gray-50">Edit</a>
         ${check.status === 'paused' ? `
           <form method="POST" action="/dashboard/checks/${check.id}/resume" style="display:inline">
@@ -421,29 +482,54 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
       </div>
     </div>
 
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-      <div class="bg-white rounded-lg border p-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-6">
+      <div class="bg-white rounded-lg border p-3 sm:p-4">
         <p class="text-xs text-gray-500 uppercase">Status</p>
         <p class="text-lg font-semibold mt-1">${statusBadge(check.status)}</p>
       </div>
-      <div class="bg-white rounded-lg border p-4">
+      <div class="bg-white rounded-lg border p-3 sm:p-4">
         <p class="text-xs text-gray-500 uppercase">Last Ping</p>
         <p class="text-lg font-semibold mt-1">${check.last_ping_at ? timeAgo(check.last_ping_at) : 'Never'}</p>
       </div>
-      <div class="bg-white rounded-lg border p-4">
+      <div class="bg-white rounded-lg border p-3 sm:p-4">
         <p class="text-xs text-gray-500 uppercase">Period</p>
         <p class="text-lg font-semibold mt-1">${formatDuration(check.period)}</p>
       </div>
-      <div class="bg-white rounded-lg border p-4">
+      <div class="bg-white rounded-lg border p-3 sm:p-4">
         <p class="text-xs text-gray-500 uppercase">Total Pings</p>
         <p class="text-lg font-semibold mt-1">${check.ping_count}</p>
       </div>
     </div>
 
+    <!-- Uptime -->
+    <div class="bg-white rounded-lg border p-4 mb-6">
+      <p class="text-sm font-medium mb-3">Uptime</p>
+      <div class="flex flex-wrap gap-6">
+        <div>
+          <p class="text-xs text-gray-500">24 hours</p>
+          <p class="text-xl font-bold ${uptimeColor(up.day1)}">${up.day1}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500">7 days</p>
+          <p class="text-xl font-bold ${uptimeColor(up.day7)}">${up.day7}</p>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500">30 days</p>
+          <p class="text-xl font-bold ${uptimeColor(up.day30)}">${up.day30}</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ping Timeline Sparkline -->
+    <div class="bg-white rounded-lg border p-4 mb-6">
+      <p class="text-sm font-medium mb-3">Ping Timeline <span class="text-xs text-gray-400 font-normal">(last ${Math.min(pings.length, 30)} pings)</span></p>
+      <div class="overflow-x-auto">${renderSparkline(pings)}</div>
+    </div>
+
     <div class="bg-white rounded-lg border p-4 mb-6">
       <p class="text-sm font-medium mb-2">Ping URL</p>
-      <div class="flex items-center gap-2">
-        <code class="bg-gray-100 px-3 py-1.5 rounded text-sm flex-1 overflow-x-auto">${pingUrl}</code>
+      <div class="overflow-x-auto">
+        <code class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}</code>
       </div>
       <p class="text-xs text-gray-400 mt-2">Add to your cron job: <code class="bg-gray-100 px-1 py-0.5 rounded">curl -fsS --retry 3 ${pingUrl}</code></p>
     </div>
@@ -451,11 +537,11 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
     <div class="grid md:grid-cols-2 gap-6">
       <div>
         <h2 class="text-lg font-semibold mb-3">Recent Pings</h2>
-        <div class="bg-white rounded-lg border divide-y">
+        <div class="bg-white rounded-lg border divide-y max-h-80 overflow-y-auto">
           ${pings.length === 0 ? '<p class="p-4 text-sm text-gray-400">No pings received yet.</p>' :
             pings.map((p: any) => `
-              <div class="px-4 py-2 flex justify-between text-sm">
-                <span class="text-gray-600">${new Date(p.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)}</span>
+              <div class="px-3 sm:px-4 py-2 flex justify-between text-sm">
+                <span class="text-gray-600 text-xs sm:text-sm">${new Date(p.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)}</span>
                 <span class="${p.type === 'success' ? 'text-green-600' : 'text-red-600'}">${p.type}</span>
               </div>
             `).join('')}
@@ -463,11 +549,11 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
       </div>
       <div>
         <h2 class="text-lg font-semibold mb-3">Recent Alerts</h2>
-        <div class="bg-white rounded-lg border divide-y">
+        <div class="bg-white rounded-lg border divide-y max-h-80 overflow-y-auto">
           ${alerts.length === 0 ? '<p class="p-4 text-sm text-gray-400">No alerts sent yet.</p>' :
             alerts.map((a: any) => `
-              <div class="px-4 py-2 flex justify-between text-sm">
-                <span class="text-gray-600">${new Date(a.created_at * 1000).toISOString().replace('T', ' ').slice(0, 19)}</span>
+              <div class="px-3 sm:px-4 py-2 flex justify-between text-sm gap-2">
+                <span class="text-gray-600 text-xs sm:text-sm">${new Date(a.created_at * 1000).toISOString().replace('T', ' ').slice(0, 19)}</span>
                 <span class="${a.type === 'recovery' ? 'text-green-600' : 'text-red-600'}">${a.type}</span>
                 <span class="${a.status === 'sent' ? 'text-green-600' : 'text-red-600'}">${a.status}</span>
               </div>
@@ -583,7 +669,7 @@ function renderBilling(user: User, storeUrl: string): string {
       <h1 class="text-2xl font-bold mb-2">Billing</h1>
       <p class="text-sm text-gray-500 mb-6">Current plan: <span class="font-medium capitalize">${user.plan}</span> (${user.check_limit} checks)</p>
 
-      <div class="grid md:grid-cols-2 gap-4">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
         ${plans.map(plan => `
           <div class="bg-white rounded-lg border ${plan.current ? 'border-blue-500 ring-1 ring-blue-500' : ''} ${plan.popular ? 'border-blue-500' : ''} p-5">
             <div class="flex items-center justify-between mb-3">
