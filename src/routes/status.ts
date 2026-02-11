@@ -337,7 +337,7 @@ status.get('/:userId', async (c) => {
     ` : ''}
 
     <div class="mt-8 text-center">
-      <p class="text-xs text-gray-300">Powered by <a href="${appUrl}" class="text-gray-400 hover:text-gray-500">CronPulse</a></p>
+      <p class="text-xs text-gray-400">Monitoring powered by <a href="${appUrl}?utm_source=status-page&utm_medium=referral" class="text-blue-500 hover:text-blue-600 font-medium">CronPulse</a> — Open-source cron job monitoring</p>
       <p class="text-xs text-gray-300 mt-1">Last updated: ${new Date().toISOString()}</p>
     </div>
   </main>
