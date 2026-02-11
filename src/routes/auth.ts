@@ -104,7 +104,7 @@ auth.get('/verify', async (c) => {
       'INSERT INTO channels (id, user_id, kind, target, name, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(channelId, userId, 'email', email, 'Email', 1, timestamp).run();
 
-    user = { id: userId, email, plan: 'free', check_limit: 10, api_key_hash: null, timezone: 'UTC', created_at: timestamp, updated_at: timestamp };
+    user = { id: userId, email, plan: 'free', check_limit: 10, api_key_hash: null, webhook_signing_secret: '', timezone: 'UTC', created_at: timestamp, updated_at: timestamp };
 
     // Capture acquisition source from UTM params and referrer
     const utmSource = c.req.query('utm_source') || '';

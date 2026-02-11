@@ -3,6 +3,7 @@ import type { Env, User, Check, Channel } from '../types';
 import { requireAuth } from '../middleware/session';
 import { generateCheckId, generateId } from '../utils/id';
 import { now, timeAgo, formatDuration, periodOptions, graceOptions, isInMaintSchedule, formatMaintSchedule } from '../utils/time';
+import { signWebhookPayload, generateSigningSecret } from '../utils/webhook-sign';
 
 type DashboardEnv = { Bindings: Env; Variables: { user: User } };
 const dashboard = new Hono<DashboardEnv>();
@@ -512,14 +513,19 @@ dashboard.post('/channels/:id/test', async (c) => {
       success = result.sent || result.demo;
       if (!success) errorMsg = result.error || 'Unknown error';
     } else if (channel.kind === 'webhook') {
+      const body = JSON.stringify({
+        event: 'test',
+        message: 'This is a test notification from CronPulse.',
+        timestamp: now(),
+      });
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (user.webhook_signing_secret) {
+        headers['X-CronPulse-Signature'] = await signWebhookPayload(body, user.webhook_signing_secret);
+      }
       const res = await fetch(channel.target, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: 'test',
-          message: 'This is a test notification from CronPulse.',
-          timestamp: now(),
-        }),
+        headers,
+        body,
         signal: AbortSignal.timeout(5000),
       });
       success = res.ok;
@@ -624,6 +630,28 @@ dashboard.post('/settings/api-key', async (c) => {
         <p class="text-sm text-green-800 font-medium mb-2">Copy your API key now. It won't be shown again.</p>
         <code class="block bg-white border rounded p-3 text-sm break-all">${apiKey}</code>
         <p class="text-xs text-green-600 mt-3">Use this key in the Authorization header: <code>Bearer ${apiKey}</code></p>
+      </div>
+      <a href="/dashboard/settings" class="text-blue-600 hover:underline text-sm mt-4 inline-block">Back to Settings</a>
+    </div>
+  `));
+});
+
+// Generate/regenerate webhook signing secret
+dashboard.post('/settings/webhook-secret', async (c) => {
+  const user = c.get('user');
+  const secret = generateSigningSecret();
+
+  await c.env.DB.prepare(
+    'UPDATE users SET webhook_signing_secret = ?, updated_at = ? WHERE id = ?'
+  ).bind(secret, now(), user.id).run();
+
+  return c.html(renderLayout(user, 'Webhook Signing Secret', `
+    <div class="max-w-lg">
+      <h1 class="text-2xl font-bold mb-6">Webhook Signing Secret</h1>
+      <div class="bg-green-50 border border-green-200 rounded-lg p-6">
+        <p class="text-sm text-green-800 font-medium mb-2">Your webhook signing secret has been generated. Copy it now.</p>
+        <code class="block bg-white border rounded p-3 text-sm break-all">${secret}</code>
+        <p class="text-xs text-green-600 mt-3">All outgoing webhook notifications will include an <code>X-CronPulse-Signature</code> header signed with this secret using HMAC-SHA256.</p>
       </div>
       <a href="/dashboard/settings" class="text-blue-600 hover:underline text-sm mt-4 inline-block">Back to Settings</a>
     </div>
@@ -1296,6 +1324,23 @@ function renderSettings(user: User): string {
           <p class="text-sm text-gray-500">API access is available on Pro and Business plans.</p>
           <a href="/dashboard/billing" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Upgrade your plan</a>
         `}
+      </div>
+
+      <div class="bg-white rounded-lg border p-6 mt-6">
+        <h2 class="font-semibold mb-3">Webhook Signing Secret</h2>
+        <p class="text-sm text-gray-600 mb-3">${user.webhook_signing_secret
+          ? 'Outgoing webhook notifications are signed with HMAC-SHA256. Verify the <code>X-CronPulse-Signature</code> header to ensure authenticity.'
+          : 'Generate a signing secret to verify the authenticity of webhook notifications from CronPulse.'}</p>
+        ${user.webhook_signing_secret ? `
+          <p class="text-xs text-gray-500 mb-3">Secret: <code>${user.webhook_signing_secret.slice(0, 10)}${'*'.repeat(20)}</code></p>
+        ` : ''}
+        <form method="POST" action="/dashboard/settings/webhook-secret">
+          <button type="submit" class="bg-gray-800 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-gray-900"
+            onclick="return ${user.webhook_signing_secret ? "confirm('This will replace your existing signing secret. All webhook consumers must update their verification. Continue?')" : 'true'}">
+            ${user.webhook_signing_secret ? 'Regenerate Secret' : 'Generate Signing Secret'}
+          </button>
+        </form>
+        <p class="text-xs text-gray-400 mt-3">See <a href="/docs#webhook-signatures" class="text-blue-600 hover:underline">docs</a> for verification instructions.</p>
       </div>
     </div>`;
 }

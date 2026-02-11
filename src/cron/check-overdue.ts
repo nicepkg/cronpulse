@@ -1,6 +1,7 @@
 import type { Env } from '../types';
 import { now, isInMaintSchedule } from '../utils/time';
 import { sendEmail, htmlEmail } from '../services/email';
+import { signWebhookPayload } from '../utils/webhook-sign';
 
 export async function checkOverdue(env: Env) {
   const timestamp = now();
@@ -59,18 +60,26 @@ async function processOverdueChecks(checks: any[], env: Env, timestamp: number) 
         AND ch.id NOT IN (SELECT channel_id FROM check_channels WHERE check_id = ?)
       `).bind(check.id, check.user_id, check.id).all();
 
+      // Get user's webhook signing secret (needed for webhook channels)
+      const hasWebhookChannel = channels.results.some((ch: any) => ch.kind === 'webhook');
+      let signingSecret = '';
+      if (hasWebhookChannel) {
+        const user = await env.DB.prepare('SELECT webhook_signing_secret FROM users WHERE id = ?').bind(check.user_id).first();
+        signingSecret = (user?.webhook_signing_secret as string) || '';
+      }
+
       if (!channels.results.length) {
         // Fallback: send to user's email
         const user = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(check.user_id).first();
         if (user) {
-          await sendDownAlert(env, check, { kind: 'email', target: user.email as string, id: null }, timestamp);
+          await sendDownAlert(env, check, { kind: 'email', target: user.email as string, id: null }, timestamp, signingSecret);
         }
         continue;
       }
 
       // Send alerts to all channels
       for (const channel of channels.results) {
-        await sendDownAlert(env, check, channel as any, timestamp);
+        await sendDownAlert(env, check, channel as any, timestamp, signingSecret);
       }
     } catch (e) {
       console.error(`Error processing overdue check ${check.id}:`, e);
@@ -82,7 +91,8 @@ async function sendDownAlert(
   env: Env,
   check: any,
   channel: { kind: string; target: string; id: string | null },
-  timestamp: number
+  timestamp: number,
+  signingSecret: string = ''
 ) {
   try {
     if (channel.kind === 'email') {
@@ -108,20 +118,25 @@ async function sendDownAlert(
         }),
       });
     } else if (channel.kind === 'webhook') {
+      const body = JSON.stringify({
+        event: 'check.down',
+        check: {
+          id: check.id,
+          name: check.name,
+          status: 'down',
+          last_ping_at: check.last_ping_at,
+          period: check.period,
+        },
+        timestamp,
+      });
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (signingSecret) {
+        headers['X-CronPulse-Signature'] = await signWebhookPayload(body, signingSecret);
+      }
       await fetch(channel.target, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          event: 'check.down',
-          check: {
-            id: check.id,
-            name: check.name,
-            status: 'down',
-            last_ping_at: check.last_ping_at,
-            period: check.period,
-          },
-          timestamp,
-        }),
+        headers,
+        body,
         signal: AbortSignal.timeout(5000),
       });
     } else if (channel.kind === 'slack') {

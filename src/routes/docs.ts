@@ -81,6 +81,9 @@ function renderDocsPage(appUrl: string): string {
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Badges</p>
       <a href="#status-badge">Status badge</a>
       <a href="#uptime-badge">Uptime badge</a>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Webhooks</p>
+      <a href="#webhook-signatures">Signature verification</a>
+      <a href="#webhook-events">Event types</a>
     </aside>
 
     <!-- Content -->
@@ -149,11 +152,27 @@ function renderDocsPage(appUrl: string): string {
           <tr><td><code>name</code></td><td>string</td><td>"Unnamed Check"</td><td>Name for the check</td></tr>
           <tr><td><code>period</code></td><td>integer</td><td>3600</td><td>Expected interval in seconds (60 &ndash; 604800)</td></tr>
           <tr><td><code>grace</code></td><td>integer</td><td>300</td><td>Grace period in seconds (60 &ndash; 3600)</td></tr>
+          <tr><td><code>tags</code></td><td>string or string[]</td><td>""</td><td>Comma-separated tags or array, e.g. <code>"production,database"</code></td></tr>
+          <tr><td><code>maint_start</code></td><td>integer|null</td><td>null</td><td>One-time maintenance window start (Unix timestamp)</td></tr>
+          <tr><td><code>maint_end</code></td><td>integer|null</td><td>null</td><td>One-time maintenance window end (Unix timestamp)</td></tr>
+          <tr><td><code>maint_schedule</code></td><td>string</td><td>""</td><td>Recurring maintenance schedule, e.g. <code>"daily:02:00-04:00"</code>, <code>"sun:02:00-06:00"</code></td></tr>
+        </tbody>
+      </table>
+      <h3>Maintenance Schedule Format</h3>
+      <p>Recurring maintenance windows suppress alerts during scheduled maintenance. Format: <code>day(s):HH:MM-HH:MM</code> (UTC).</p>
+      <table>
+        <thead><tr><th>Schedule</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>daily:02:00-04:00</code></td><td>Every day 2:00&ndash;4:00 UTC</td></tr>
+          <tr><td><code>weekdays:03:00-05:00</code></td><td>Mon&ndash;Fri 3:00&ndash;5:00 UTC</td></tr>
+          <tr><td><code>weekends:00:00-06:00</code></td><td>Sat&ndash;Sun 0:00&ndash;6:00 UTC</td></tr>
+          <tr><td><code>sun:02:00-06:00</code></td><td>Every Sunday 2:00&ndash;6:00 UTC</td></tr>
+          <tr><td><code>mon,wed,fri:04:00-05:00</code></td><td>Mon, Wed, Fri 4:00&ndash;5:00 UTC</td></tr>
         </tbody>
       </table>
       <pre><code>curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"name": "Nightly backup", "period": 86400, "grace": 600}' \\
+  -d '{"name": "Nightly backup", "period": 86400, "grace": 600, "tags": "production,database", "maint_schedule": "daily:02:00-04:00"}' \\
   ${appUrl}/api/v1/checks</code></pre>
       <h3>Response <code>201</code></h3>
       <pre><code>{
@@ -385,6 +404,83 @@ curl -fsS ${appUrl}/ping/YOUR_CHECK_ID</code></pre>
 ![Uptime 30d](${appUrl}/badge/YOUR_CHECK_ID/uptime?period=30d)</code></pre>
       <h3>Response</h3>
       <p>Returns <code>image/svg+xml</code> with 60-second cache. Color coded: green (&ge; 99.5%), amber (&ge; 95%), red (&lt; 95%).</p>
+
+      <h2 id="webhook-signatures" style="border-top: 3px solid #2563eb; padding-top: 1.5rem;">Webhook Signature Verification</h2>
+      <p>CronPulse signs all outgoing webhook notifications with HMAC-SHA256. This lets you verify that the payload was sent by CronPulse and hasn't been tampered with.</p>
+      <h3>Setup</h3>
+      <ol>
+        <li>Go to <strong>Dashboard &rarr; Settings</strong> and click <strong>Generate Signing Secret</strong></li>
+        <li>Copy the <code>whsec_...</code> secret and store it securely in your application</li>
+        <li>Verify the <code>X-CronPulse-Signature</code> header on every incoming webhook</li>
+      </ol>
+      <h3>Verification</h3>
+      <p>The <code>X-CronPulse-Signature</code> header contains a hex-encoded HMAC-SHA256 hash of the raw request body, signed with your webhook signing secret.</p>
+      <pre><code># Node.js verification example
+const crypto = require('crypto');
+
+function verifySignature(body, signature, secret) {
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  );
+}
+
+// In your webhook handler:
+app.post('/webhook', (req, res) =&gt; {
+  const signature = req.headers['x-cronpulse-signature'];
+  const isValid = verifySignature(
+    req.rawBody, signature, process.env.CRONPULSE_WEBHOOK_SECRET
+  );
+  if (!isValid) return res.status(401).send('Invalid signature');
+  // Process the webhook...
+});</code></pre>
+      <pre><code># Python verification example
+import hmac, hashlib
+
+def verify_signature(body: bytes, signature: str, secret: str) -&gt; bool:
+    expected = hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)</code></pre>
+
+      <h2 id="webhook-events">Webhook Event Types</h2>
+      <p>When a check changes status, CronPulse sends a POST request to your configured webhook URL with the following JSON payloads:</p>
+
+      <h3><code>check.down</code> &mdash; Check is overdue</h3>
+      <pre><code>{
+  "event": "check.down",
+  "check": {
+    "id": "abc123",
+    "name": "Nightly backup",
+    "status": "down",
+    "last_ping_at": 1707700000,
+    "period": 86400
+  },
+  "timestamp": 1707786400
+}</code></pre>
+
+      <h3><code>check.up</code> &mdash; Check recovered</h3>
+      <pre><code>{
+  "event": "check.up",
+  "check": {
+    "id": "abc123",
+    "name": "Nightly backup"
+  },
+  "timestamp": 1707786500
+}</code></pre>
+
+      <h3><code>test</code> &mdash; Test notification</h3>
+      <pre><code>{
+  "event": "test",
+  "message": "This is a test notification from CronPulse.",
+  "timestamp": 1707786600
+}</code></pre>
+
+      <p>All webhook requests include <code>Content-Type: application/json</code> and have a 5-second timeout. If you have a signing secret configured, the <code>X-CronPulse-Signature</code> header will also be included.</p>
 
     </main>
   </div>

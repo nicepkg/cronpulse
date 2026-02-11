@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env, CheckConfig } from '../types';
 import { now } from '../utils/time';
 import { sendEmail, htmlEmail } from '../services/email';
+import { signWebhookPayload } from '../utils/webhook-sign';
 
 const ping = new Hono<{ Bindings: Env }>();
 
@@ -122,6 +123,14 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
     return;
   }
 
+  // Get user's webhook signing secret
+  const hasWebhookChannel = channels.results.some((ch: any) => ch.kind === 'webhook');
+  let signingSecret = '';
+  if (hasWebhookChannel) {
+    const userRow = await env.DB.prepare('SELECT webhook_signing_secret FROM users WHERE id = ?').bind(userId).first();
+    signingSecret = (userRow?.webhook_signing_secret as string) || '';
+  }
+
   for (const channel of channels.results) {
     const ch = channel as any;
     try {
@@ -135,14 +144,19 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
           `${env.APP_URL}/dashboard/checks/${checkId}`
         );
       } else if (ch.kind === 'webhook') {
+        const body = JSON.stringify({
+          event: 'check.up',
+          check: { id: checkId, name: (check as any).name },
+          timestamp,
+        });
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (signingSecret) {
+          headers['X-CronPulse-Signature'] = await signWebhookPayload(body, signingSecret);
+        }
         await fetch(ch.target, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'check.up',
-            check: { id: checkId, name: (check as any).name },
-            timestamp,
-          }),
+          headers,
+          body,
           signal: AbortSignal.timeout(5000),
         });
       } else if (ch.kind === 'slack') {

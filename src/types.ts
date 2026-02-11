@@ -16,6 +16,7 @@ export interface User {
   plan: string;
   check_limit: number;
   api_key_hash: string | null;
+  webhook_signing_secret: string;
   timezone: string;
   created_at: number;
   updated_at: number;
