@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env, CheckConfig } from '../types';
 import { now } from '../utils/time';
+import { sendEmail } from '../services/email';
 
 const ping = new Hono<{ Bindings: Env }>();
 
@@ -153,19 +154,7 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
 }
 
 async function sendAlertEmail(env: Env, to: string, subject: string, text: string) {
-  await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'CronPulse <alerts@cronpulse.dev>',
-      to,
-      subject,
-      text,
-    }),
-  });
+  await sendEmail(env, { to, subject, text });
 }
 
 export default ping;

@@ -1,5 +1,6 @@
 import type { Env } from '../types';
 import { now } from '../utils/time';
+import { sendEmail } from '../services/email';
 
 export async function checkOverdue(env: Env) {
   const timestamp = now();
@@ -79,23 +80,11 @@ async function sendDownAlert(
 ) {
   try {
     if (channel.kind === 'email') {
-      if (!env.RESEND_API_KEY) {
-        console.log(`[demo mode] Would send DOWN alert for "${check.name}" to ${channel.target}`);
-      } else {
-        await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            from: 'CronPulse <alerts@cronpulse.dev>',
-            to: channel.target,
-            subject: `[CronPulse] ${check.name} is DOWN`,
-            text: `Your check "${check.name}" has not reported in on time.\n\nExpected ping every ${formatPeriod(check.period)} with ${formatPeriod(check.grace)} grace period.\n\nLast ping: ${check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString() : 'never'}\n\nView details: ${env.APP_URL}/dashboard/checks/${check.id}`,
-          }),
-        });
-      }
+      await sendEmail(env, {
+        to: channel.target,
+        subject: `[CronPulse] ${check.name} is DOWN`,
+        text: `Your check "${check.name}" has not reported in on time.\n\nExpected ping every ${formatPeriod(check.period)} with ${formatPeriod(check.grace)} grace period.\n\nLast ping: ${check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString() : 'never'}\n\nView details: ${env.APP_URL}/dashboard/checks/${check.id}`,
+      });
     } else if (channel.kind === 'webhook') {
       await fetch(channel.target, {
         method: 'POST',

@@ -3,6 +3,7 @@ import { setCookie, getCookie, deleteCookie } from 'hono/cookie';
 import type { Env, User } from '../types';
 import { generateId, generateToken, generateSessionId } from '../utils/id';
 import { now } from '../utils/time';
+import { sendEmail } from '../services/email';
 
 const auth = new Hono<{ Bindings: Env }>();
 
@@ -35,37 +36,19 @@ auth.post('/login', async (c) => {
   // Send magic link email
   const magicLink = `${c.env.APP_URL}/auth/verify?token=${token}`;
 
-  // If Resend is not configured, show the magic link directly (demo mode)
-  if (!c.env.RESEND_API_KEY) {
-    return c.html(renderDemoLinkPage(email, magicLink));
+  const result = await sendEmail(c.env, {
+    to: email,
+    subject: 'Your CronPulse Login Link',
+    text: `Click here to log in to CronPulse:\n\n${magicLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.`,
+  });
+
+  // If email was sent successfully, show "check your email" page
+  if (result.sent) {
+    return c.html(renderCheckEmailPage(email));
   }
 
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'CronPulse <login@cronpulse.dev>',
-        to: email,
-        subject: 'Your CronPulse Login Link',
-        text: `Click here to log in to CronPulse:\n\n${magicLink}\n\nThis link expires in 15 minutes.\n\nIf you didn't request this, you can safely ignore this email.`,
-      }),
-    });
-    if (!res.ok) {
-      console.error('Resend API error:', res.status, await res.text());
-      // Fallback to showing the link directly
-      return c.html(renderDemoLinkPage(email, magicLink));
-    }
-  } catch (e) {
-    console.error('Failed to send magic link email:', e);
-    // Fallback to showing the link directly
-    return c.html(renderDemoLinkPage(email, magicLink));
-  }
-
-  return c.html(renderCheckEmailPage(email));
+  // Fallback: show magic link directly (demo mode or send failure)
+  return c.html(renderDemoLinkPage(email, magicLink));
 });
 
 // GET /auth/verify - Verify magic link token
