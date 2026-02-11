@@ -1,0 +1,1 @@
+ALTER TABLE checks ADD COLUMN maint_schedule TEXT NOT NULL DEFAULT '';

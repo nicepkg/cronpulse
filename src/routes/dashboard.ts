@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env, User, Check, Channel } from '../types';
 import { requireAuth } from '../middleware/session';
 import { generateCheckId, generateId } from '../utils/id';
-import { now, timeAgo, formatDuration, periodOptions, graceOptions } from '../utils/time';
+import { now, timeAgo, formatDuration, periodOptions, graceOptions, isInMaintSchedule, formatMaintSchedule } from '../utils/time';
 
 type DashboardEnv = { Bindings: Env; Variables: { user: User } };
 const dashboard = new Hono<DashboardEnv>();
@@ -128,11 +128,14 @@ dashboard.post('/checks', async (c) => {
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
   const tags = parseTags(body.tags as string);
+  const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
+  const maintEnd = (body.maint_end as string) ? Math.floor(new Date(body.maint_end as string).getTime() / 1000) : null;
+  const maintSchedule = (body.maint_schedule as string || '').trim();
   const timestamp = now();
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -230,10 +233,13 @@ dashboard.post('/checks/:id', async (c) => {
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
   const tags = parseTags(body.tags as string);
+  const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
+  const maintEnd = (body.maint_end as string) ? Math.floor(new Date(body.maint_end as string).getTime() / 1000) : null;
+  const maintSchedule = (body.maint_schedule as string || '').trim();
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   // Invalidate KV cache
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
@@ -729,6 +735,25 @@ function statusBadge(status: string): string {
   return `<span class="px-2 py-0.5 rounded text-xs font-medium ${colors[status] || colors.new}">${status}</span>`;
 }
 
+function maintBadge(check: Check): string {
+  const ts = now();
+  // Check recurring schedule first
+  if (check.maint_schedule && isInMaintSchedule(check.maint_schedule, ts)) {
+    return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800" title="In recurring maintenance">maint</span>';
+  }
+  if (check.maint_schedule) {
+    return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-600" title="Recurring maintenance configured">sched</span>';
+  }
+  if (!check.maint_start || !check.maint_end) return '';
+  if (ts >= check.maint_start && ts <= check.maint_end) {
+    return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800" title="In maintenance window">maint</span>';
+  }
+  if (ts < check.maint_start) {
+    return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-600" title="Maintenance scheduled">sched</span>';
+  }
+  return '';
+}
+
 function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string, healthMap?: Record<string, number>): string {
   const tagFilterBar = allTags && allTags.length > 0 ? `
     <div class="flex flex-wrap items-center gap-2 mb-4">
@@ -780,6 +805,7 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
               <div class="flex items-center gap-2 min-w-0 flex-wrap">
                 <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
                 ${statusBadge(check.status)}
+                ${maintBadge(check)}
                 ${renderTagPills(check.tags)}
                 <span class="text-xs font-medium ${uptimeColor(uptime7d)} hidden sm:inline" title="7d uptime">${uptime7d}</span>
                 <span class="hidden sm:inline">${healthScoreBadge(hs)}</span>
@@ -826,6 +852,37 @@ function renderCheckForm(check?: Check): string {
             class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. production, database, backups">
           <p class="text-xs text-gray-400 mt-1">Comma-separated tags for organizing checks</p>
         </div>
+        <fieldset class="border rounded-md p-4 space-y-3">
+          <legend class="text-sm font-medium text-gray-700 px-1">Maintenance Window <span class="font-normal text-gray-400">(optional)</span></legend>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">One-time: Start</label>
+            <input type="datetime-local" name="maint_start" value="${isEdit && check!.maint_start ? new Date(check!.maint_start * 1000).toISOString().slice(0, 16) : ''}"
+              class="w-full px-3 py-2 border rounded-md text-sm">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">One-time: End</label>
+            <input type="datetime-local" name="maint_end" value="${isEdit && check!.maint_end ? new Date(check!.maint_end * 1000).toISOString().slice(0, 16) : ''}"
+              class="w-full px-3 py-2 border rounded-md text-sm">
+          </div>
+          <p class="text-xs text-gray-400">Alerts are suppressed during this window. Leave both empty to disable.</p>
+          <hr class="border-gray-200">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Recurring Schedule</label>
+            <select name="maint_schedule" class="w-full px-3 py-2 border rounded-md text-sm">
+              <option value="">None</option>
+              <option value="daily:02:00-04:00" ${isEdit && check!.maint_schedule === 'daily:02:00-04:00' ? 'selected' : ''}>Daily 02:00-04:00 UTC</option>
+              <option value="daily:03:00-05:00" ${isEdit && check!.maint_schedule === 'daily:03:00-05:00' ? 'selected' : ''}>Daily 03:00-05:00 UTC</option>
+              <option value="daily:04:00-06:00" ${isEdit && check!.maint_schedule === 'daily:04:00-06:00' ? 'selected' : ''}>Daily 04:00-06:00 UTC</option>
+              <option value="sun:02:00-06:00" ${isEdit && check!.maint_schedule === 'sun:02:00-06:00' ? 'selected' : ''}>Sunday 02:00-06:00 UTC</option>
+              <option value="sat:02:00-06:00" ${isEdit && check!.maint_schedule === 'sat:02:00-06:00' ? 'selected' : ''}>Saturday 02:00-06:00 UTC</option>
+              <option value="sat,sun:00:00-06:00" ${isEdit && check!.maint_schedule === 'sat,sun:00:00-06:00' ? 'selected' : ''}>Weekends 00:00-06:00 UTC</option>
+              <option value="weekdays:02:00-04:00" ${isEdit && check!.maint_schedule === 'weekdays:02:00-04:00' ? 'selected' : ''}>Weekdays 02:00-04:00 UTC</option>
+              <option value="weekends:00:00-08:00" ${isEdit && check!.maint_schedule === 'weekends:00:00-08:00' ? 'selected' : ''}>Weekends 00:00-08:00 UTC</option>
+              ${isEdit && check!.maint_schedule && !['', 'daily:02:00-04:00', 'daily:03:00-05:00', 'daily:04:00-06:00', 'sun:02:00-06:00', 'sat:02:00-06:00', 'sat,sun:00:00-06:00', 'weekdays:02:00-04:00', 'weekends:00:00-08:00'].includes(check!.maint_schedule) ? `<option value="${escapeHtml(check!.maint_schedule)}" selected>Custom: ${escapeHtml(check!.maint_schedule)}</option>` : ''}
+            </select>
+            <p class="text-xs text-gray-400 mt-1">Recurring window — alerts suppressed during this time every week. Use API for custom schedules.</p>
+          </div>
+        </fieldset>
         <div class="flex gap-3">
           <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">
             ${isEdit ? 'Save Changes' : 'Create Check'}
@@ -905,6 +962,46 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
         </div>
       </div>
     </div>
+
+    <!-- Maintenance Window -->
+    ${(check.maint_start && check.maint_end) || check.maint_schedule ? (() => {
+      const ts = now();
+      let sections = '';
+
+      // One-time window
+      if (check.maint_start && check.maint_end) {
+        const isActive = ts >= check.maint_start && ts <= check.maint_end;
+        const isScheduled = ts < check.maint_start;
+        const startStr = new Date(check.maint_start * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+        const endStr = new Date(check.maint_end * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+        const badge = isActive
+          ? '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Active</span>'
+          : isScheduled
+          ? '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-600">Scheduled</span>'
+          : '<span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">Expired</span>';
+        sections += `<div class="flex items-center gap-2"><span class="text-xs text-gray-500">One-time:</span> ${badge}</div>
+          <p class="text-sm text-gray-600">${startStr} &mdash; ${endStr}</p>`;
+      }
+
+      // Recurring schedule
+      if (check.maint_schedule) {
+        const isRecurringActive = isInMaintSchedule(check.maint_schedule, ts);
+        const recurBadge = isRecurringActive
+          ? '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800">Active Now</span>'
+          : '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-600">Recurring</span>';
+        sections += `${sections ? '<hr class="border-gray-200 my-2">' : ''}
+          <div class="flex items-center gap-2"><span class="text-xs text-gray-500">Recurring:</span> ${recurBadge}</div>
+          <p class="text-sm text-gray-600">${formatMaintSchedule(check.maint_schedule)}</p>`;
+      }
+
+      return `<div class="bg-white rounded-lg border p-4 mb-6">
+      <div class="flex items-center gap-2 mb-2">
+        <p class="text-sm font-medium">Maintenance Window</p>
+      </div>
+      ${sections}
+      <p class="text-xs text-gray-400 mt-2">Alerts are suppressed during maintenance windows.</p>
+    </div>`;
+    })() : ''}
 
     <!-- Ping Timeline Sparkline -->
     <div class="bg-white rounded-lg border p-4 mb-6">

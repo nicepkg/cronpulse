@@ -1,5 +1,5 @@
 import type { Env } from '../types';
-import { now } from '../utils/time';
+import { now, isInMaintSchedule } from '../utils/time';
 import { sendEmail, htmlEmail } from '../services/email';
 
 export async function checkOverdue(env: Env) {
@@ -9,13 +9,14 @@ export async function checkOverdue(env: Env) {
 
   while (true) {
     const overdueChecks = await env.DB.prepare(`
-      SELECT c.id, c.name, c.user_id, c.period, c.grace, c.last_ping_at
+      SELECT c.id, c.name, c.user_id, c.period, c.grace, c.last_ping_at, c.maint_schedule
       FROM checks c
       WHERE c.status IN ('up', 'new')
         AND c.next_expected_at IS NOT NULL
         AND (c.next_expected_at + c.grace) < ?
+        AND (c.maint_start IS NULL OR c.maint_end IS NULL OR ? NOT BETWEEN c.maint_start AND c.maint_end)
       LIMIT ? OFFSET ?
-    `).bind(timestamp, batchSize, offset).all();
+    `).bind(timestamp, timestamp, batchSize, offset).all();
 
     if (!overdueChecks.results.length) break;
 
@@ -30,6 +31,11 @@ export async function checkOverdue(env: Env) {
 async function processOverdueChecks(checks: any[], env: Env, timestamp: number) {
   for (const check of checks) {
     try {
+      // Skip if in recurring maintenance schedule
+      if (check.maint_schedule && isInMaintSchedule(check.maint_schedule, timestamp)) {
+        continue;
+      }
+
       // Mark check as down
       await env.DB.prepare(
         `UPDATE checks SET status = 'down', last_alert_at = ?, alert_count = alert_count + 1, updated_at = ? WHERE id = ?`

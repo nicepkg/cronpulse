@@ -62,7 +62,7 @@ api.get('/checks', async (c) => {
   const tagFilter = (c.req.query('tag') || '').trim().toLowerCase();
 
   const checks = await c.env.DB.prepare(
-    'SELECT id, name, period, grace, status, tags, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, period, grace, status, tags, maint_start, maint_end, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all<Check>();
 
   const results = tagFilter
@@ -75,7 +75,7 @@ api.get('/checks', async (c) => {
 // POST /api/v1/checks - Create a check
 api.post('/checks', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[] };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   // Check limit
   const count = await c.env.DB.prepare(
@@ -91,6 +91,9 @@ api.post('/checks', async (c) => {
   const period = body.period || 3600;
   const grace = body.grace || 300;
   const tags = parseTags(body.tags);
+  const maintStart = body.maint_start ?? null;
+  const maintEnd = body.maint_end ?? null;
+  const maintSchedule = (body.maint_schedule || '').trim();
   const timestamp = now();
 
   // Validate period and grace
@@ -101,9 +104,14 @@ api.post('/checks', async (c) => {
     return c.json({ error: 'Grace must be between 60 and 3600 seconds' }, 400);
   }
 
+  // Validate maintenance window
+  if (maintStart != null && maintEnd != null && maintEnd <= maintStart) {
+    return c.json({ error: 'maint_end must be after maint_start' }, 400);
+  }
+
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -210,7 +218,7 @@ api.get('/checks/:id', async (c) => {
 api.patch('/checks/:id', async (c) => {
   const user = c.get('user');
   const checkId = c.req.param('id');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[] };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   const existing = await c.env.DB.prepare(
     'SELECT * FROM checks WHERE id = ? AND user_id = ?'
@@ -222,6 +230,9 @@ api.patch('/checks/:id', async (c) => {
   const period = body.period || existing.period as number;
   const grace = body.grace || existing.grace as number;
   const tags = body.tags !== undefined ? parseTags(body.tags) : (existing.tags as string || '');
+  const maintStart = body.maint_start !== undefined ? (body.maint_start ?? null) : (existing.maint_start as number | null);
+  const maintEnd = body.maint_end !== undefined ? (body.maint_end ?? null) : (existing.maint_end as number | null);
+  const maintSchedule = body.maint_schedule !== undefined ? (body.maint_schedule || '').trim() : (existing.maint_schedule as string || '');
 
   if (period < 60 || period > 604800) {
     return c.json({ error: 'Period must be between 60 and 604800 seconds' }, 400);
@@ -230,9 +241,14 @@ api.patch('/checks/:id', async (c) => {
     return c.json({ error: 'Grace must be between 60 and 3600 seconds' }, 400);
   }
 
+  // Validate maintenance window
+  if (maintStart != null && maintEnd != null && maintEnd <= maintStart) {
+    return c.json({ error: 'maint_end must be after maint_start' }, 400);
+  }
+
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
 
@@ -331,6 +347,53 @@ api.get('/checks/:id/alerts', async (c) => {
 
   return c.json({ alerts: alerts.results });
 });
+
+// GET /api/v1/incidents - List all incidents across all checks
+// GET /api/v1/alerts - Alias for incidents
+const incidentsHandler = async (c: any) => {
+  const user = c.get('user');
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50') || 50, 1), 200);
+  const offset = Math.max(parseInt(c.req.query('offset') || '0') || 0, 0);
+  const typeFilter = (c.req.query('type') || '').trim().toLowerCase();
+  const checkFilter = (c.req.query('check_id') || '').trim();
+
+  // Build WHERE clause dynamically
+  let where = 'c.user_id = ?';
+  const params: any[] = [user.id];
+
+  if (checkFilter) {
+    where += ' AND a.check_id = ?';
+    params.push(checkFilter);
+  }
+  if (typeFilter === 'down' || typeFilter === 'recovery') {
+    where += ' AND a.type = ?';
+    params.push(typeFilter);
+  }
+
+  const [incidents, totalResult] = await Promise.all([
+    c.env.DB.prepare(`
+      SELECT a.id, a.check_id, c.name as check_name, a.channel_id, a.type, a.status, a.error, a.created_at, a.sent_at
+      FROM alerts a
+      INNER JOIN checks c ON a.check_id = c.id
+      WHERE ${where}
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(...params, limit, offset).all(),
+    c.env.DB.prepare(`
+      SELECT COUNT(*) as total FROM alerts a
+      INNER JOIN checks c ON a.check_id = c.id
+      WHERE ${where}
+    `).bind(...params).first(),
+  ]);
+
+  return c.json({
+    incidents: incidents.results,
+    total: (totalResult as any)?.total || 0,
+  });
+};
+
+api.get('/incidents', incidentsHandler);
+api.get('/alerts', incidentsHandler);
 
 async function hashApiKey(key: string): Promise<string> {
   const encoder = new TextEncoder();

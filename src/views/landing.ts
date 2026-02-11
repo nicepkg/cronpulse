@@ -192,49 +192,95 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
   <!-- Features -->
   <section class="py-16">
     <div class="max-w-5xl mx-auto px-4">
-      <h2 class="text-2xl font-bold text-center mb-12">Simple, reliable monitoring</h2>
-      <div class="grid md:grid-cols-2 gap-6 max-w-3xl mx-auto">
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">Instant alerts</h3>
-            <p class="text-sm text-gray-600">Email, Slack, and webhook notifications when checks go down or recover.</p>
-          </div>
+      <h2 class="text-2xl font-bold text-center mb-12">Everything you need to sleep soundly</h2>
+      <div class="grid md:grid-cols-3 gap-6 max-w-4xl mx-auto">
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#9889;</div>
+          <h3 class="font-semibold mb-1">Instant alerts</h3>
+          <p class="text-sm text-gray-600">Email, Slack, and webhook notifications when checks go down or recover.</p>
         </div>
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">Configurable grace periods</h3>
-            <p class="text-sm text-gray-600">Set how long to wait before alerting. No false alarms.</p>
-          </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128736;</div>
+          <h3 class="font-semibold mb-1">Maintenance windows</h3>
+          <p class="text-sm text-gray-600">Schedule one-time or recurring maintenance. No false alarms during planned downtime.</p>
         </div>
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">Global edge network</h3>
-            <p class="text-sm text-gray-600">Runs on Cloudflare's 300+ locations. Sub-5ms ping response time.</p>
-          </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128200;</div>
+          <h3 class="font-semibold mb-1">Health scores</h3>
+          <p class="text-sm text-gray-600">See check health at a glance: uptime percentage, alert frequency, and overall score.</p>
         </div>
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">Recovery notifications</h3>
-            <p class="text-sm text-gray-600">Know when a check recovers, not just when it goes down.</p>
-          </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#127760;</div>
+          <h3 class="font-semibold mb-1">Global edge network</h3>
+          <p class="text-sm text-gray-600">Runs on Cloudflare's 300+ locations. Sub-5ms ping response time.</p>
         </div>
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">Ping history</h3>
-            <p class="text-sm text-gray-600">See when each check was last pinged and its complete history.</p>
-          </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128274;</div>
+          <h3 class="font-semibold mb-1">Open source</h3>
+          <p class="text-sm text-gray-600">Full source code on GitHub. Self-host on your own Cloudflare account if you prefer.</p>
         </div>
-        <div class="flex gap-3">
-          <div class="text-green-500 mt-1">&#10003;</div>
-          <div>
-            <h3 class="font-semibold">REST API</h3>
-            <p class="text-sm text-gray-600">Manage checks programmatically. Perfect for CI/CD integration.</p>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128268;</div>
+          <h3 class="font-semibold mb-1">REST API</h3>
+          <p class="text-sm text-gray-600">Manage checks, incidents, and alerts programmatically. Perfect for CI/CD.</p>
+        </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128276;</div>
+          <h3 class="font-semibold mb-1">Recovery notifications</h3>
+          <p class="text-sm text-gray-600">Know when a check recovers, not just when it goes down.</p>
+        </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#127991;</div>
+          <h3 class="font-semibold mb-1">Status badges</h3>
+          <p class="text-sm text-gray-600">Embed live status and uptime badges in your README or status page.</p>
+        </div>
+        <div class="bg-white border rounded-lg p-5">
+          <div class="text-2xl mb-2">&#128230;</div>
+          <h3 class="font-semibold mb-1">Import &amp; export</h3>
+          <p class="text-sm text-gray-600">Bulk import checks from JSON. Export your config anytime. No lock-in.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Social Proof / Use Cases -->
+  <section class="bg-gray-50 py-16">
+    <div class="max-w-4xl mx-auto px-4">
+      <h2 class="text-2xl font-bold text-center mb-4">Built for developers who run things in production</h2>
+      <p class="text-center text-gray-600 mb-12">Whether it's a nightly backup, a payment processor, or a data pipeline &mdash; if it runs on a schedule, CronPulse watches it.</p>
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="bg-white rounded-lg border p-5">
+          <div class="bg-gray-900 rounded-md p-3 mb-4 text-left">
+            <code class="text-green-400 text-xs">
+              <span class="text-gray-500"># Database backup</span><br>
+              0 2 * * * pg_dump ... &amp;&amp; \\<br>
+              &nbsp; curl -fsS ${appUrl}/ping/abc
+            </code>
           </div>
+          <h3 class="font-semibold text-sm">Database Backups</h3>
+          <p class="text-xs text-gray-500 mt-1">Know instantly if your nightly backup stops running.</p>
+        </div>
+        <div class="bg-white rounded-lg border p-5">
+          <div class="bg-gray-900 rounded-md p-3 mb-4 text-left">
+            <code class="text-green-400 text-xs">
+              <span class="text-gray-500"># Payment sync</span><br>
+              */15 * * * * node sync.js &amp;&amp; \\<br>
+              &nbsp; curl -fsS ${appUrl}/ping/def
+            </code>
+          </div>
+          <h3 class="font-semibold text-sm">Payment Processing</h3>
+          <p class="text-xs text-gray-500 mt-1">Catch payment sync failures before customers notice.</p>
+        </div>
+        <div class="bg-white rounded-lg border p-5">
+          <div class="bg-gray-900 rounded-md p-3 mb-4 text-left">
+            <code class="text-green-400 text-xs">
+              <span class="text-gray-500"># Data pipeline</span><br>
+              0 * * * * python etl.py &amp;&amp; \\<br>
+              &nbsp; curl -fsS ${appUrl}/ping/ghi
+            </code>
+          </div>
+          <h3 class="font-semibold text-sm">Data Pipelines</h3>
+          <p class="text-xs text-gray-500 mt-1">Ensure your ETL jobs complete on schedule, every time.</p>
         </div>
       </div>
     </div>
