@@ -43,6 +43,8 @@ export interface Check {
   maint_start: number | null;
   maint_end: number | null;
   maint_schedule: string;
+  cron_expression: string;
+  last_started_at: number | null;
   created_at: number;
   updated_at: number;
 }

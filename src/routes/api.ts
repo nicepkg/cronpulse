@@ -4,6 +4,7 @@ import type { Env, User, Check } from '../types';
 import { generateCheckId } from '../utils/id';
 import { now } from '../utils/time';
 import { rateLimit } from '../middleware/rate-limit';
+import { parseCronExpression } from '../utils/cron-parser';
 
 type ApiEnv = { Bindings: Env; Variables: { user: User } };
 const api = new Hono<ApiEnv>();
@@ -88,7 +89,7 @@ api.get('/checks', async (c) => {
 // POST /api/v1/checks - Create a check
 api.post('/checks', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; cron_expression?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   // Check limit
   const count = await c.env.DB.prepare(
@@ -101,8 +102,21 @@ api.post('/checks', async (c) => {
 
   const id = generateCheckId();
   const name = (body.name || '').trim() || 'Unnamed Check';
-  const period = body.period || 3600;
-  const grace = body.grace || 300;
+  const cronExpr = (body.cron_expression || '').trim();
+  let period = body.period || 3600;
+  let grace = body.grace || 300;
+
+  // If cron expression is provided, parse and use it
+  if (cronExpr) {
+    const parsed = parseCronExpression(cronExpr);
+    if (!parsed.valid) {
+      return c.json({ error: `Invalid cron expression: ${parsed.error}` }, 400);
+    }
+    // Only override period/grace if not explicitly provided
+    if (!body.period) period = parsed.periodSeconds;
+    if (!body.grace) grace = parsed.graceSeconds;
+  }
+
   const tags = parseTags(body.tags);
   const groupName = (body.group_name || '').trim();
   const maintStart = body.maint_start ?? null;
@@ -124,8 +138,8 @@ api.post('/checks', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, cron_expression, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, groupName, cronExpr, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -152,7 +166,7 @@ api.post('/checks', async (c) => {
 api.get('/checks/export', async (c) => {
   const user = c.get('user');
   const checks = await c.env.DB.prepare(
-    'SELECT name, period, grace, tags, group_name FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT name, period, grace, tags, group_name, cron_expression FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all();
 
   return c.json({
@@ -164,6 +178,7 @@ api.get('/checks/export', async (c) => {
       grace: ch.grace,
       tags: ch.tags || '',
       group_name: ch.group_name || '',
+      cron_expression: ch.cron_expression || '',
     })),
   });
 });
@@ -234,7 +249,7 @@ api.get('/checks/:id', async (c) => {
 api.patch('/checks/:id', async (c) => {
   const user = c.get('user');
   const checkId = c.req.param('id');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[]; group_name?: string; cron_expression?: string; maint_start?: number | null; maint_end?: number | null; maint_schedule?: string };
 
   const existing = await c.env.DB.prepare(
     'SELECT * FROM checks WHERE id = ? AND user_id = ?'
@@ -243,8 +258,20 @@ api.patch('/checks/:id', async (c) => {
   if (!existing) return c.json({ error: 'Check not found' }, 404);
 
   const name = body.name !== undefined ? (body.name || '').trim() || 'Unnamed Check' : existing.name as string;
-  const period = body.period || existing.period as number;
-  const grace = body.grace || existing.grace as number;
+  const cronExpr = body.cron_expression !== undefined ? (body.cron_expression || '').trim() : (existing.cron_expression as string || '');
+  let period = body.period || existing.period as number;
+  let grace = body.grace || existing.grace as number;
+
+  // If cron expression is provided and changed, parse it
+  if (body.cron_expression !== undefined && cronExpr) {
+    const parsed = parseCronExpression(cronExpr);
+    if (!parsed.valid) {
+      return c.json({ error: `Invalid cron expression: ${parsed.error}` }, 400);
+    }
+    if (!body.period) period = parsed.periodSeconds;
+    if (!body.grace) grace = parsed.graceSeconds;
+  }
+
   const tags = body.tags !== undefined ? parseTags(body.tags) : (existing.tags as string || '');
   const groupName = body.group_name !== undefined ? (body.group_name || '').trim() : (existing.group_name as string || '');
   const maintStart = body.maint_start !== undefined ? (body.maint_start ?? null) : (existing.maint_start as number | null);
@@ -264,8 +291,8 @@ api.patch('/checks/:id', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, cron_expression = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, groupName, cronExpr, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
 
@@ -411,6 +438,17 @@ const incidentsHandler = async (c: any) => {
 
 api.get('/incidents', incidentsHandler);
 api.get('/alerts', incidentsHandler);
+
+// POST /api/v1/cron/parse - Parse a cron expression
+api.post('/cron/parse', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as { expression?: string };
+  const expr = (body.expression || '').trim();
+  if (!expr) {
+    return c.json({ error: 'Missing "expression" field' }, 400);
+  }
+  const result = parseCronExpression(expr);
+  return c.json(result);
+});
 
 async function hashApiKey(key: string): Promise<string> {
   const encoder = new TextEncoder();

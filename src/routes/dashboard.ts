@@ -3,6 +3,7 @@ import type { Env, User, Check, Channel } from '../types';
 import { requireAuth } from '../middleware/session';
 import { generateCheckId, generateId } from '../utils/id';
 import { now, timeAgo, formatDuration, periodOptions, graceOptions, isInMaintSchedule, formatMaintSchedule } from '../utils/time';
+import { parseCronExpression } from '../utils/cron-parser';
 import { signWebhookPayload, generateSigningSecret } from '../utils/webhook-sign';
 
 type DashboardEnv = { Bindings: Env; Variables: { user: User } };
@@ -134,8 +135,19 @@ dashboard.post('/checks', async (c) => {
 
   const id = generateCheckId();
   const name = (body.name as string || '').trim() || 'Unnamed Check';
-  const period = parseInt(body.period as string) || 3600;
-  const grace = parseInt(body.grace as string) || 300;
+  const cronExpr = (body.cron_expression as string || '').trim();
+  let period = parseInt(body.period as string) || 3600;
+  let grace = parseInt(body.grace as string) || 300;
+
+  // If cron expression is provided, parse and use it to set period/grace
+  if (cronExpr) {
+    const parsed = parseCronExpression(cronExpr);
+    if (parsed.valid && parsed.periodSeconds >= 60 && parsed.periodSeconds <= 604800) {
+      period = parsed.periodSeconds;
+      grace = parsed.graceSeconds;
+    }
+  }
+
   const tags = parseTags(body.tags as string);
   const groupName = (body.group_name as string || '').trim();
   const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
@@ -144,8 +156,8 @@ dashboard.post('/checks', async (c) => {
   const timestamp = now();
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, group_name, cron_expression, maint_start, maint_end, maint_schedule, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, groupName, cronExpr, maintStart, maintEnd, maintSchedule, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -240,8 +252,19 @@ dashboard.post('/checks/:id', async (c) => {
   if (!check) return c.redirect('/dashboard');
 
   const name = (body.name as string || '').trim() || 'Unnamed Check';
-  const period = parseInt(body.period as string) || 3600;
-  const grace = parseInt(body.grace as string) || 300;
+  const cronExpr = (body.cron_expression as string || '').trim();
+  let period = parseInt(body.period as string) || 3600;
+  let grace = parseInt(body.grace as string) || 300;
+
+  // If cron expression is provided, parse and use it
+  if (cronExpr) {
+    const parsed = parseCronExpression(cronExpr);
+    if (parsed.valid && parsed.periodSeconds >= 60 && parsed.periodSeconds <= 604800) {
+      period = parsed.periodSeconds;
+      grace = parsed.graceSeconds;
+    }
+  }
+
   const tags = parseTags(body.tags as string);
   const groupName = (body.group_name as string || '').trim();
   const maintStart = (body.maint_start as string) ? Math.floor(new Date(body.maint_start as string).getTime() / 1000) : null;
@@ -249,8 +272,8 @@ dashboard.post('/checks/:id', async (c) => {
   const maintSchedule = (body.maint_schedule as string || '').trim();
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, tags, groupName, maintStart, maintEnd, maintSchedule, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, group_name = ?, cron_expression = ?, maint_start = ?, maint_end = ?, maint_schedule = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, groupName, cronExpr, maintStart, maintEnd, maintSchedule, now(), checkId).run();
 
   // Invalidate KV cache
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
@@ -304,7 +327,7 @@ dashboard.post('/checks/:id/resume', async (c) => {
 dashboard.get('/export/json', async (c) => {
   const user = c.get('user');
   const checks = await c.env.DB.prepare(
-    'SELECT id, name, period, grace, status, tags, group_name, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, period, grace, status, tags, group_name, cron_expression, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all();
 
   const data = {
@@ -316,6 +339,7 @@ dashboard.get('/export/json', async (c) => {
       grace: ch.grace,
       tags: ch.tags || '',
       group_name: ch.group_name || '',
+      cron_expression: ch.cron_expression || '',
     })),
   };
 
@@ -746,7 +770,7 @@ function renderSparkline(pings: any[]): string {
 
   const bars = recent.map((p: any, i: number) => {
     const x = i * (barW + gap);
-    const color = p.type === 'success' ? '#22c55e' : '#ef4444';
+    const color = p.type === 'success' ? '#22c55e' : p.type === 'start' ? '#3b82f6' : '#ef4444';
     return `<rect x="${x}" y="0" width="${barW}" height="${h}" rx="2" fill="${color}" opacity="0.85"><title>${new Date(p.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)} — ${p.type}</title></rect>`;
   }).join('');
 
@@ -924,18 +948,25 @@ function renderCheckForm(check?: Check): string {
             class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. DB Backup">
         </div>
         <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Cron Expression <span class="font-normal text-gray-400">(optional)</span></label>
+          <input type="text" name="cron_expression" id="cron-input" value="${isEdit ? escapeHtml(check!.cron_expression || '') : ''}"
+            class="w-full px-3 py-2 border rounded-md text-sm font-mono" placeholder="*/5 * * * *">
+          <div id="cron-preview" class="text-xs mt-1 text-gray-500 hidden"></div>
+          <p class="text-xs text-gray-400 mt-1">Paste your crontab expression to auto-set period &amp; grace. Format: <code>min hour dom month dow</code></p>
+        </div>
+        <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Expected Period</label>
-          <select name="period" class="w-full px-3 py-2 border rounded-md text-sm">
+          <select name="period" id="period-select" class="w-full px-3 py-2 border rounded-md text-sm">
             ${periodOptions().map(o => `<option value="${o.value}" ${check && check.period === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
           </select>
-          <p class="text-xs text-gray-400 mt-1">How often your cron job runs</p>
+          <p class="text-xs text-gray-400 mt-1">How often your cron job runs (auto-set when using cron expression)</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Grace Period</label>
-          <select name="grace" class="w-full px-3 py-2 border rounded-md text-sm">
+          <select name="grace" id="grace-select" class="w-full px-3 py-2 border rounded-md text-sm">
             ${graceOptions().map(o => `<option value="${o.value}" ${check && check.grace === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
           </select>
-          <p class="text-xs text-gray-400 mt-1">Extra time before alerting</p>
+          <p class="text-xs text-gray-400 mt-1">Extra time before alerting (auto-set when using cron expression)</p>
         </div>
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Group</label>
@@ -987,6 +1018,108 @@ function renderCheckForm(check?: Check): string {
           <a href="/dashboard" class="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</a>
         </div>
       </form>
+      <script>
+      (function() {
+        var cronInput = document.getElementById('cron-input');
+        var preview = document.getElementById('cron-preview');
+        var periodSelect = document.getElementById('period-select');
+        var graceSelect = document.getElementById('grace-select');
+        if (!cronInput) return;
+
+        var ALIASES = {'@yearly':'0 0 1 1 *','@annually':'0 0 1 1 *','@monthly':'0 0 1 * *','@weekly':'0 0 * * 0','@daily':'0 0 * * *','@midnight':'0 0 * * *','@hourly':'0 * * * *'};
+
+        function parseField(f, min, max) {
+          var vals = [];
+          f.split(',').forEach(function(part) {
+            var sp = part.split('/'), rangePart = sp[0], step = sp[1] ? parseInt(sp[1]) : 1;
+            if (isNaN(step) || step < 1) return;
+            var start, end;
+            if (rangePart === '*') { start = min; end = max; }
+            else if (rangePart.indexOf('-') !== -1) { var r = rangePart.split('-'); start = parseInt(r[0]); end = parseInt(r[1]); }
+            else { start = parseInt(rangePart); end = sp[1] ? max : start; }
+            if (isNaN(start) || isNaN(end) || start < min || end > max) return;
+            for (var i = start; i <= end; i += step) vals.push(i);
+          });
+          return vals.length ? vals : null;
+        }
+
+        function parseCron(expr) {
+          var e = (expr || '').trim().toLowerCase();
+          e = ALIASES[e] || e;
+          var f = e.split(/\\s+/);
+          if (f.length !== 5) return null;
+          var mins = parseField(f[0],0,59), hrs = parseField(f[1],0,23), dom = parseField(f[2],1,31), mon = parseField(f[3],1,12), dow = parseField(f[4],0,6);
+          if (!mins||!hrs||!dom||!mon||!dow) return null;
+
+          var period = 3600;
+          if (hrs.length===24 && dom.length===31 && mon.length===12 && dow.length===7 && mins.length>1) {
+            var gaps=[]; for(var i=1;i<mins.length;i++) gaps.push(mins[i]-mins[i-1]);
+            gaps.push(60-mins[mins.length-1]+mins[0]);
+            if(gaps.every(function(g){return g===gaps[0];})) period=gaps[0]*60;
+            else period=Math.round(3600/mins.length);
+          } else if (mins.length===1 && dom.length===31 && mon.length===12 && dow.length===7 && hrs.length>1 && hrs.length<24) {
+            var g2=[]; for(var j=1;j<hrs.length;j++) g2.push(hrs[j]-hrs[j-1]);
+            g2.push(24-hrs[hrs.length-1]+hrs[0]);
+            if(g2.every(function(g){return g===g2[0];})) period=g2[0]*3600;
+            else period=Math.round(86400/hrs.length);
+          } else if (mins.length===1 && hrs.length===24 && dom.length===31 && mon.length===12 && dow.length===7) { period=3600; }
+          else if (mins.length===1 && hrs.length===1 && dom.length===31 && mon.length===12 && dow.length===7) { period=86400; }
+          else if (mins.length===1 && hrs.length===1 && dom.length===31 && mon.length===12 && dow.length===1) { period=604800; }
+          else if (mins.length===1 && hrs.length===1 && dom.length===31 && mon.length===12) { period=Math.round(604800/dow.length); }
+
+          var grace = Math.min(3600, Math.max(60, Math.round(period*0.2)));
+          var desc = 'Custom schedule';
+          if (mins.length===60 && hrs.length===24 && dom.length===31 && mon.length===12 && dow.length===7) desc='Every minute';
+          else if (hrs.length===24 && dom.length===31 && mon.length===12 && dow.length===7 && mins.length>1) {
+            if(mins[0]===0 && mins.length>1) { var g=mins[1]-mins[0]; if(mins.every(function(m,i){return m===i*g;})) desc='Every '+g+' minutes'; else desc=mins.length+' times/hour'; }
+            else desc=mins.length+' times/hour';
+          }
+          else if (mins.length===1 && hrs.length===24 && dom.length===31 && mon.length===12 && dow.length===7) desc='Every hour at :'+('0'+mins[0]).slice(-2);
+          else if (mins.length===1 && hrs.length===1 && dom.length===31 && mon.length===12 && dow.length===7) desc='Daily at '+('0'+hrs[0]).slice(-2)+':'+('0'+mins[0]).slice(-2)+' UTC';
+          else if (mins.length===1 && hrs.length===1 && dom.length===31 && mon.length===12 && dow.length<7) {
+            var dn=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            desc=dow.map(function(d){return dn[d]}).join(', ')+' at '+('0'+hrs[0]).slice(-2)+':'+('0'+mins[0]).slice(-2)+' UTC';
+          }
+          return { period: period, grace: grace, desc: desc };
+        }
+
+        function fmtDur(s) {
+          if (s < 60) return s+'s';
+          if (s < 3600) return Math.floor(s/60)+'m';
+          if (s < 86400) return Math.floor(s/3600)+'h';
+          return Math.floor(s/86400)+'d';
+        }
+
+        function selectNearest(sel, val) {
+          var opts = sel.options, best = 0, bestDiff = Infinity;
+          for (var i = 0; i < opts.length; i++) {
+            var d = Math.abs(parseInt(opts[i].value) - val);
+            if (d < bestDiff) { bestDiff = d; best = i; }
+          }
+          sel.selectedIndex = best;
+        }
+
+        cronInput.addEventListener('input', function() {
+          var val = cronInput.value.trim();
+          if (!val) { preview.classList.add('hidden'); return; }
+          var r = parseCron(val);
+          if (!r) {
+            preview.classList.remove('hidden');
+            preview.className = 'text-xs mt-1 text-red-500';
+            preview.textContent = 'Invalid cron expression';
+            return;
+          }
+          preview.classList.remove('hidden');
+          preview.className = 'text-xs mt-1 text-green-600';
+          preview.textContent = r.desc + ' (period: ' + fmtDur(r.period) + ', grace: ' + fmtDur(r.grace) + ')';
+          selectNearest(periodSelect, r.period);
+          selectNearest(graceSelect, r.grace);
+        });
+
+        // Trigger on load if value exists
+        if (cronInput.value.trim()) cronInput.dispatchEvent(new Event('input'));
+      })();
+      </script>
     </div>`;
 }
 
@@ -1107,15 +1240,45 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
       <div class="overflow-x-auto">${renderSparkline(pings)}</div>
     </div>
 
+    ${check.cron_expression ? `
     <div class="bg-white rounded-lg border p-4 mb-6">
-      <p class="text-sm font-medium mb-2">Ping URL</p>
-      <div class="flex items-center gap-2">
-        <div class="overflow-x-auto flex-1">
-          <code id="ping-url" class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}</code>
+      <p class="text-sm font-medium mb-2">Cron Schedule</p>
+      <code class="bg-gray-100 px-3 py-1.5 rounded text-sm font-mono">${escapeHtml(check.cron_expression)}</code>
+    </div>
+    ` : ''}
+
+    <div class="bg-white rounded-lg border p-4 mb-6">
+      <p class="text-sm font-medium mb-2">Ping URLs</p>
+      <div class="space-y-3">
+        <div>
+          <p class="text-xs text-gray-500 mb-1">Success (default)</p>
+          <div class="flex items-center gap-2">
+            <div class="overflow-x-auto flex-1">
+              <code id="ping-url" class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}</code>
+            </div>
+            <button onclick="copyToClipboard('${pingUrl}', this)" class="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm text-gray-600 transition-colors" title="Copy URL">Copy</button>
+          </div>
         </div>
-        <button onclick="copyToClipboard('${pingUrl}', this)" class="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm text-gray-600 transition-colors" title="Copy URL">Copy</button>
+        <div>
+          <p class="text-xs text-gray-500 mb-1">Start signal <span class="text-gray-400">(marks job as running)</span></p>
+          <div class="flex items-center gap-2">
+            <div class="overflow-x-auto flex-1">
+              <code class="bg-gray-100 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}/start</code>
+            </div>
+            <button onclick="copyToClipboard('${pingUrl}/start', this)" class="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm text-gray-600 transition-colors" title="Copy URL">Copy</button>
+          </div>
+        </div>
+        <div>
+          <p class="text-xs text-gray-500 mb-1">Fail signal <span class="text-gray-400">(reports failure, triggers alert)</span></p>
+          <div class="flex items-center gap-2">
+            <div class="overflow-x-auto flex-1">
+              <code class="bg-red-50 px-3 py-1.5 rounded text-sm block whitespace-nowrap">${pingUrl}/fail</code>
+            </div>
+            <button onclick="copyToClipboard('${pingUrl}/fail', this)" class="shrink-0 px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded text-sm text-gray-600 transition-colors" title="Copy URL">Copy</button>
+          </div>
+        </div>
       </div>
-      <p class="text-xs text-gray-400 mt-2">Add to your cron job: <code class="bg-gray-100 px-1 py-0.5 rounded">curl -fsS --retry 3 ${pingUrl}</code></p>
+      <p class="text-xs text-gray-400 mt-3">Usage: <code class="bg-gray-100 px-1 py-0.5 rounded">curl ${pingUrl}/start && your-job && curl ${pingUrl} || curl ${pingUrl}/fail</code></p>
     </div>
 
     <div class="bg-white rounded-lg border p-4 mb-6">
@@ -1163,12 +1326,14 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
         <h2 class="text-lg font-semibold mb-3">Recent Pings</h2>
         <div class="bg-white rounded-lg border divide-y max-h-80 overflow-y-auto">
           ${pings.length === 0 ? '<p class="p-4 text-sm text-gray-400">No pings received yet.</p>' :
-            pings.map((p: any) => `
+            pings.map((p: any) => {
+              const typeColor = p.type === 'success' ? 'text-green-600' : p.type === 'start' ? 'text-blue-600' : 'text-red-600';
+              return `
               <div class="px-3 sm:px-4 py-2 flex justify-between text-sm">
                 <span class="text-gray-600 text-xs sm:text-sm">${new Date(p.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)}</span>
-                <span class="${p.type === 'success' ? 'text-green-600' : 'text-red-600'}">${p.type}</span>
-              </div>
-            `).join('')}
+                <span class="${typeColor}">${p.type}</span>
+              </div>`;
+            }).join('')}
         </div>
       </div>
       <div>
