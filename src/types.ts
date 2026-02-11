@@ -33,6 +33,7 @@ export interface Check {
   next_expected_at: number | null;
   alert_count: number;
   ping_count: number;
+  tags: string;
   created_at: number;
   updated_at: number;
 }

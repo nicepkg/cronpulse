@@ -7,11 +7,28 @@ import { now, timeAgo, formatDuration, periodOptions, graceOptions } from '../ut
 type DashboardEnv = { Bindings: Env; Variables: { user: User } };
 const dashboard = new Hono<DashboardEnv>();
 
+function parseTags(input: string | undefined | null): string {
+  if (!input) return '';
+  const tags = input
+    .split(',')
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length > 0);
+  return [...new Set(tags)].join(',');
+}
+
+function renderTagPills(tags: string): string {
+  if (!tags) return '';
+  return tags.split(',').map(t =>
+    `<span class="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-xs">${escapeHtml(t)}</span>`
+  ).join(' ');
+}
+
 dashboard.use('*', requireAuth);
 
 // Dashboard home - Check list
 dashboard.get('/', async (c) => {
   const user = c.get('user');
+  const tagFilter = (c.req.query('tag') || '').trim().toLowerCase();
   const timestamp = now();
   const day1 = timestamp - 86400;
 
@@ -29,7 +46,31 @@ dashboard.get('/', async (c) => {
     uptimeMap[row.check_id] = row.total > 0 ? ((row.ok / row.total) * 100).toFixed(1) + '%' : '—';
   }
 
-  return c.html(renderLayout(user, 'Checks', renderCheckList(checks.results, user, c.env.APP_URL, uptimeMap)));
+  // Collect all unique tags across checks
+  const allTags = new Set<string>();
+  for (const check of checks.results) {
+    if (check.tags) {
+      for (const t of check.tags.split(',')) {
+        if (t.trim()) allTags.add(t.trim());
+      }
+    }
+  }
+
+  // Filter checks by tag if a filter is active
+  const filteredChecks = tagFilter
+    ? checks.results.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter))
+    : checks.results;
+
+  // Import/export status messages
+  const imported = c.req.query('imported');
+  const error = c.req.query('error');
+  let message = '';
+  if (imported) message = `<div class="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-800">Successfully imported ${escapeHtml(imported)} checks.</div>`;
+  if (error === 'no-file') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">No file selected.</div>`;
+  if (error === 'invalid-format') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Invalid file format. Expected CronPulse JSON export.</div>`;
+  if (error === 'parse-error') message = `<div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-800">Could not parse the file. Please check the format.</div>`;
+
+  return c.html(renderLayout(user, 'Checks', message + renderCheckList(filteredChecks, user, c.env.APP_URL, uptimeMap, [...allTags].sort(), tagFilter)));
 });
 
 // New check form
@@ -69,11 +110,12 @@ dashboard.post('/checks', async (c) => {
   const name = (body.name as string || '').trim() || 'Unnamed Check';
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
+  const tags = parseTags(body.tags as string);
   const timestamp = now();
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -160,10 +202,11 @@ dashboard.post('/checks/:id', async (c) => {
   const name = (body.name as string || '').trim() || 'Unnamed Check';
   const period = parseInt(body.period as string) || 3600;
   const grace = parseInt(body.grace as string) || 300;
+  const tags = parseTags(body.tags as string);
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, now(), checkId).run();
 
   // Invalidate KV cache
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
@@ -211,6 +254,128 @@ dashboard.post('/checks/:id/resume', async (c) => {
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
 
   return c.redirect(`/dashboard/checks/${checkId}`);
+});
+
+// Export checks as JSON
+dashboard.get('/export/json', async (c) => {
+  const user = c.get('user');
+  const checks = await c.env.DB.prepare(
+    'SELECT id, name, period, grace, status, tags, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+  ).bind(user.id).all();
+
+  const data = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    checks: checks.results.map((ch: any) => ({
+      name: ch.name,
+      period: ch.period,
+      grace: ch.grace,
+      tags: ch.tags || '',
+    })),
+  };
+
+  return c.json(data, 200, {
+    'Content-Disposition': 'attachment; filename="cronpulse-checks.json"',
+  });
+});
+
+// Export checks as CSV
+dashboard.get('/export/csv', async (c) => {
+  const user = c.get('user');
+  const checks = await c.env.DB.prepare(
+    'SELECT name, period, grace, status, tags, created_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+  ).bind(user.id).all();
+
+  const header = 'name,period_seconds,grace_seconds,status,tags';
+  const rows = checks.results.map((ch: any) => {
+    const name = '"' + (ch.name || '').replace(/"/g, '""') + '"';
+    const tags = '"' + (ch.tags || '').replace(/"/g, '""') + '"';
+    return `${name},${ch.period},${ch.grace},${ch.status},${tags}`;
+  });
+
+  const csv = [header, ...rows].join('\n');
+  return c.text(csv, 200, {
+    'Content-Type': 'text/csv',
+    'Content-Disposition': 'attachment; filename="cronpulse-checks.csv"',
+  });
+});
+
+// Import checks from JSON file
+dashboard.post('/import', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.parseBody();
+  const file = body.file;
+
+  if (!file || typeof file === 'string') {
+    return c.redirect('/dashboard?error=no-file');
+  }
+
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (!data.checks || !Array.isArray(data.checks)) {
+      return c.redirect('/dashboard?error=invalid-format');
+    }
+
+    // Check limit
+    const countResult = await c.env.DB.prepare(
+      'SELECT COUNT(*) as count FROM checks WHERE user_id = ?'
+    ).bind(user.id).first();
+    const currentCount = (countResult?.count as number) || 0;
+    const remaining = user.check_limit - currentCount;
+
+    const toImport = data.checks.slice(0, remaining);
+    let imported = 0;
+
+    for (const ch of toImport) {
+      if (!ch.name) continue;
+      const id = generateCheckId();
+      const name = String(ch.name).trim().slice(0, 200) || 'Imported Check';
+      const period = Math.max(60, Math.min(604800, parseInt(ch.period) || 3600));
+      const grace = Math.max(60, Math.min(3600, parseInt(ch.grace) || 300));
+      const tags = parseTags(ch.tags || '');
+      const timestamp = now();
+
+      await c.env.DB.prepare(
+        'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+      imported++;
+    }
+
+    return c.redirect(`/dashboard?imported=${imported}`);
+  } catch {
+    return c.redirect('/dashboard?error=parse-error');
+  }
+});
+
+// Incident timeline
+dashboard.get('/incidents', async (c) => {
+  const user = c.get('user');
+  const page = Math.max(1, parseInt(c.req.query('page') || '1') || 1);
+  const limit = 50;
+  const offset = (page - 1) * limit;
+
+  const [alerts, totalResult] = await Promise.all([
+    c.env.DB.prepare(`
+      SELECT a.*, c.name as check_name
+      FROM alerts a
+      INNER JOIN checks c ON a.check_id = c.id
+      WHERE c.user_id = ?
+      ORDER BY a.created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(user.id, limit, offset).all(),
+    c.env.DB.prepare(`
+      SELECT COUNT(*) as total FROM alerts a
+      INNER JOIN checks c ON a.check_id = c.id
+      WHERE c.user_id = ?
+    `).bind(user.id).first<{ total: number }>(),
+  ]);
+
+  const total = totalResult?.total || 0;
+  const totalPages = Math.ceil(total / limit);
+
+  return c.html(renderLayout(user, 'Incidents', renderIncidentTimeline(alerts.results, page, totalPages, total)));
 });
 
 // Channels page
@@ -376,6 +541,7 @@ function renderLayout(user: User, title: string, content: string): string {
       </div>
       <div class="flex items-center gap-4 mt-2 overflow-x-auto text-sm">
         <a href="/dashboard" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Checks</a>
+        <a href="/dashboard/incidents" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Incidents</a>
         <a href="/dashboard/channels" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Channels</a>
         <a href="/dashboard/billing" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Billing</a>
         <a href="/dashboard/settings" class="text-gray-600 hover:text-gray-900 whitespace-nowrap">Settings</a>
@@ -399,19 +565,45 @@ function statusBadge(status: string): string {
   return `<span class="px-2 py-0.5 rounded text-xs font-medium ${colors[status] || colors.new}">${status}</span>`;
 }
 
-function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>): string {
+function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?: Record<string, string>, allTags?: string[], activeTag?: string): string {
+  const tagFilterBar = allTags && allTags.length > 0 ? `
+    <div class="flex flex-wrap items-center gap-2 mb-4">
+      <span class="text-xs text-gray-500 font-medium">Filter:</span>
+      <a href="/dashboard" class="px-2 py-0.5 rounded-full text-xs ${!activeTag ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}">All</a>
+      ${allTags.map(tag => `
+        <a href="${activeTag === tag ? '/dashboard' : `/dashboard?tag=${encodeURIComponent(tag)}`}" class="px-2 py-0.5 rounded-full text-xs ${activeTag === tag ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}">
+          ${escapeHtml(tag)}${activeTag === tag ? ' <span class="ml-0.5">&times;</span>' : ''}
+        </a>
+      `).join('')}
+    </div>
+  ` : '';
+
   return `
     <div class="flex items-center justify-between mb-6">
       <h1 class="text-2xl font-bold">Your Checks</h1>
-      <a href="/dashboard/checks/new" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">
-        + New Check
-      </a>
+      <div class="flex items-center gap-2">
+        <div class="relative" id="export-menu">
+          <button onclick="document.getElementById('export-dropdown').classList.toggle('hidden')"
+            class="px-3 py-2 border rounded-md text-sm text-gray-600 hover:bg-gray-50">Export</button>
+          <div id="export-dropdown" class="hidden absolute right-0 mt-1 bg-white border rounded-lg shadow-lg py-1 z-10">
+            <a href="/dashboard/export/json" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Export JSON</a>
+            <a href="/dashboard/export/csv" class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">Export CSV</a>
+          </div>
+        </div>
+        <button onclick="document.getElementById('import-file').click()"
+          class="px-3 py-2 border rounded-md text-sm text-gray-600 hover:bg-gray-50">Import</button>
+        <form id="import-form" method="POST" action="/dashboard/import" enctype="multipart/form-data" class="hidden">
+          <input type="file" id="import-file" name="file" accept=".json" onchange="document.getElementById('import-form').submit()">
+        </form>
+        <a href="/dashboard/checks/new" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">+ New Check</a>
+      </div>
     </div>
     <p class="text-sm text-gray-500 mb-4">${checks.length} / ${user.check_limit} checks used</p>
+    ${tagFilterBar}
     ${checks.length === 0 ? `
       <div class="bg-white rounded-lg border p-12 text-center">
-        <p class="text-gray-500">No checks yet. Create your first one!</p>
-        <a href="/dashboard/checks/new" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Create a check</a>
+        <p class="text-gray-500">${activeTag ? 'No checks with this tag.' : 'No checks yet. Create your first one!'}</p>
+        ${activeTag ? '<a href="/dashboard" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Clear filter</a>' : '<a href="/dashboard/checks/new" class="text-blue-600 hover:underline text-sm mt-2 inline-block">Create a check</a>'}
       </div>
     ` : `
       <div class="bg-white rounded-lg border divide-y">
@@ -420,9 +612,10 @@ function renderCheckList(checks: Check[], user: User, appUrl: string, uptimeMap?
           return `
           <a href="/dashboard/checks/${check.id}" class="block px-3 sm:px-4 py-3 hover:bg-gray-50">
             <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2 min-w-0">
+              <div class="flex items-center gap-2 min-w-0 flex-wrap">
                 <span class="font-medium text-gray-900 truncate">${escapeHtml(check.name)}</span>
                 ${statusBadge(check.status)}
+                ${renderTagPills(check.tags)}
                 <span class="text-xs font-medium ${uptimeColor(uptime24h)} hidden sm:inline" title="24h uptime">${uptime24h}</span>
               </div>
               <div class="text-xs sm:text-sm text-gray-400 whitespace-nowrap ml-2">
@@ -461,6 +654,12 @@ function renderCheckForm(check?: Check): string {
           </select>
           <p class="text-xs text-gray-400 mt-1">Extra time before alerting</p>
         </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Tags</label>
+          <input type="text" name="tags" value="${isEdit ? escapeHtml(check!.tags || '') : ''}"
+            class="w-full px-3 py-2 border rounded-md text-sm" placeholder="e.g. production, database, backups">
+          <p class="text-xs text-gray-400 mt-1">Comma-separated tags for organizing checks</p>
+        </div>
         <div class="flex gap-3">
           <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-700">
             ${isEdit ? 'Save Changes' : 'Create Check'}
@@ -478,6 +677,7 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
     <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-3">
       <div>
         <h1 class="text-xl sm:text-2xl font-bold">${escapeHtml(check.name)}</h1>
+        ${check.tags ? `<div class="flex flex-wrap gap-1 mt-1">${renderTagPills(check.tags)}</div>` : ''}
         <span class="text-sm text-gray-500">ID: ${check.id}</span>
       </div>
       <div class="flex flex-wrap gap-2">
@@ -620,6 +820,69 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
         </div>
       </div>
     </div>`;
+}
+
+function renderIncidentTimeline(alerts: any[], page: number, totalPages: number, total: number): string {
+  // Group alerts by date
+  const grouped: Record<string, any[]> = {};
+  for (const alert of alerts) {
+    const date = new Date(alert.created_at * 1000).toISOString().slice(0, 10);
+    if (!grouped[date]) grouped[date] = [];
+    grouped[date].push(alert);
+  }
+
+  const pagination = totalPages > 1 ? `
+    <div class="flex items-center justify-between mt-6 text-sm">
+      <span class="text-gray-500">${total} incidents total</span>
+      <div class="flex items-center gap-2">
+        ${page > 1 ? `<a href="/dashboard/incidents?page=${page - 1}" class="px-3 py-1 border rounded hover:bg-gray-50">Prev</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Prev</span>`}
+        <span class="text-gray-600">Page ${page} of ${totalPages}</span>
+        ${page < totalPages ? `<a href="/dashboard/incidents?page=${page + 1}" class="px-3 py-1 border rounded hover:bg-gray-50">Next</a>` : `<span class="px-3 py-1 border rounded text-gray-300">Next</span>`}
+      </div>
+    </div>
+  ` : '';
+
+  return `
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">Incident Timeline</h1>
+    </div>
+    ${alerts.length === 0 ? `
+      <div class="bg-white rounded-lg border p-12 text-center">
+        <p class="text-gray-500">No incidents yet. Your checks are running smoothly!</p>
+      </div>
+    ` : `
+      <div class="space-y-6">
+        ${Object.entries(grouped).map(([date, dayAlerts]) => `
+          <div>
+            <h2 class="text-sm font-semibold text-gray-500 mb-3">${date}</h2>
+            <div class="bg-white rounded-lg border divide-y">
+              ${dayAlerts.map((a: any) => {
+                const time = new Date(a.created_at * 1000).toISOString().replace('T', ' ').slice(11, 19);
+                const isDown = a.type === 'down';
+                const icon = isDown ? '<span class="text-red-500">&#9660;</span>' : '<span class="text-green-500">&#9650;</span>';
+                const label = isDown ? 'went DOWN' : 'recovered';
+                const labelColor = isDown ? 'text-red-600' : 'text-green-600';
+                const statusBg = a.status === 'sent' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700';
+                return `
+                <div class="px-4 py-3 flex items-start gap-3">
+                  <div class="mt-0.5">${icon}</div>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <a href="/dashboard/checks/${a.check_id}" class="font-medium text-gray-900 hover:text-blue-600 truncate">${escapeHtml(a.check_name || a.check_id)}</a>
+                      <span class="text-sm ${labelColor}">${label}</span>
+                      <span class="text-xs px-1.5 py-0.5 rounded ${statusBg}">${a.status}</span>
+                    </div>
+                    ${a.error ? `<p class="text-xs text-red-500 mt-1">${escapeHtml(a.error)}</p>` : ''}
+                  </div>
+                  <span class="text-xs text-gray-400 whitespace-nowrap">${time}</span>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      ${pagination}
+    `}`;
 }
 
 function renderChannels(channels: Channel[]): string {

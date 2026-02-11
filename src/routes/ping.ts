@@ -145,6 +145,39 @@ async function sendRecoveryAlerts(checkId: string, userId: string, env: Env, tim
           }),
           signal: AbortSignal.timeout(5000),
         });
+      } else if (ch.kind === 'slack') {
+        const detailUrl = `${env.APP_URL}/dashboard/checks/${checkId}`;
+        await fetch(ch.target, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: `✅ ${(check as any).name} is back UP`,
+            blocks: [
+              {
+                type: 'header',
+                text: { type: 'plain_text', text: `✅ ${(check as any).name} is back UP`, emoji: true },
+              },
+              {
+                type: 'section',
+                fields: [
+                  { type: 'mrkdwn', text: `*Status:*\n🟢 Recovered` },
+                  { type: 'mrkdwn', text: `*Recovered At:*\n${new Date(timestamp * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC` },
+                ],
+              },
+              {
+                type: 'actions',
+                elements: [
+                  {
+                    type: 'button',
+                    text: { type: 'plain_text', text: 'View Details', emoji: true },
+                    url: detailUrl,
+                  },
+                ],
+              },
+            ],
+          }),
+          signal: AbortSignal.timeout(5000),
+        });
       }
       await env.DB.prepare(
         'INSERT INTO alerts (check_id, channel_id, type, status, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?)'

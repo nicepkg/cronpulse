@@ -119,11 +119,39 @@ async function sendDownAlert(
         signal: AbortSignal.timeout(5000),
       });
     } else if (channel.kind === 'slack') {
+      const lastPingText = check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'never';
+      const detailUrl = `${env.APP_URL}/dashboard/checks/${check.id}`;
       await fetch(channel.target, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: `:rotating_light: *${check.name}* is DOWN\nLast ping: ${check.last_ping_at ? new Date(check.last_ping_at * 1000).toISOString() : 'never'}`,
+          text: `🚨 ${check.name} is DOWN`,
+          blocks: [
+            {
+              type: 'header',
+              text: { type: 'plain_text', text: `🚨 ${check.name} is DOWN`, emoji: true },
+            },
+            {
+              type: 'section',
+              fields: [
+                { type: 'mrkdwn', text: `*Status:*\n🔴 Down` },
+                { type: 'mrkdwn', text: `*Last Ping:*\n${lastPingText}` },
+                { type: 'mrkdwn', text: `*Expected Every:*\n${formatPeriod(check.period)}` },
+                { type: 'mrkdwn', text: `*Grace Period:*\n${formatPeriod(check.grace)}` },
+              ],
+            },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'View Details', emoji: true },
+                  url: detailUrl,
+                  style: 'danger',
+                },
+              ],
+            },
+          ],
         }),
         signal: AbortSignal.timeout(5000),
       });

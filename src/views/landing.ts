@@ -27,6 +27,9 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
     "operatingSystem": "Web",
     "url": "${appUrl}",
     "description": "Open source cron job monitoring. Get email, Slack, and webhook alerts when your cron jobs fail.",
+    "isAccessibleForFree": true,
+    "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+    "screenshot": "${appUrl}/og-image.png",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -38,6 +41,55 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
       "name": "CronPulse",
       "url": "${appUrl}"
     }
+  }
+  </script>
+  <!-- FAQPage structured data for rich search results -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is CronPulse?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "CronPulse is an open source cron job monitoring service. You add a single curl command to the end of your cron job, and CronPulse alerts you via email, Slack, or webhook if it stops running on schedule."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does CronPulse work?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Create a check with an expected interval (e.g. every hour). CronPulse gives you a unique ping URL. Add 'curl -fsS https://cron-pulse.com/ping/YOUR_ID' to the end of your cron job. If the ping doesn't arrive within the expected interval plus grace period, CronPulse sends you an alert."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is CronPulse free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes! CronPulse has a free tier with up to 10 checks, email alerts, and 7-day history. Paid plans start at $5/month for more checks and additional notification channels like Slack and webhooks."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is CronPulse open source?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes, CronPulse is fully open source under the AGPL-3.0 license. The source code is available on GitHub at github.com/nicepkg/cronpulse. You can self-host it on Cloudflare Workers."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What notification channels does CronPulse support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "CronPulse supports email alerts (all plans), Slack incoming webhooks, and custom webhook notifications. Recovery notifications are also sent when a check comes back online."
+        }
+      }
+    ]
   }
   </script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -247,6 +299,35 @@ export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): st
           </ul>
           <a href="/auth/login" class="block mt-6 text-center border rounded-md py-2 text-sm hover:bg-gray-50">Get Started</a>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="py-16">
+    <div class="max-w-3xl mx-auto px-4">
+      <h2 class="text-2xl font-bold text-center mb-8">Frequently Asked Questions</h2>
+      <div class="space-y-3">
+        <details class="bg-white border rounded-lg">
+          <summary class="px-6 py-4 cursor-pointer font-medium text-gray-900 hover:text-blue-600">What is CronPulse?</summary>
+          <div class="px-6 pb-4 text-sm text-gray-600">CronPulse is an open source cron job monitoring service. You add a single curl command to the end of your cron job, and CronPulse alerts you via email, Slack, or webhook if it stops running on schedule.</div>
+        </details>
+        <details class="bg-white border rounded-lg">
+          <summary class="px-6 py-4 cursor-pointer font-medium text-gray-900 hover:text-blue-600">How does CronPulse work?</summary>
+          <div class="px-6 pb-4 text-sm text-gray-600">Create a check with an expected interval (e.g. every hour). CronPulse gives you a unique ping URL. Add &lsquo;curl -fsS https://cron-pulse.com/ping/YOUR_ID&rsquo; to the end of your cron job. If the ping doesn&rsquo;t arrive within the expected interval plus grace period, CronPulse sends you an alert.</div>
+        </details>
+        <details class="bg-white border rounded-lg">
+          <summary class="px-6 py-4 cursor-pointer font-medium text-gray-900 hover:text-blue-600">Is CronPulse free?</summary>
+          <div class="px-6 pb-4 text-sm text-gray-600">Yes! CronPulse has a free tier with up to 10 checks, email alerts, and 7-day history. Paid plans start at $5/month for more checks and additional notification channels like Slack and webhooks.</div>
+        </details>
+        <details class="bg-white border rounded-lg">
+          <summary class="px-6 py-4 cursor-pointer font-medium text-gray-900 hover:text-blue-600">Is CronPulse open source?</summary>
+          <div class="px-6 pb-4 text-sm text-gray-600">Yes, CronPulse is fully open source under the AGPL-3.0 license. The source code is available on GitHub at <a href="https://github.com/nicepkg/cronpulse" class="text-blue-600 hover:underline" target="_blank" rel="noopener">github.com/nicepkg/cronpulse</a>. You can self-host it on Cloudflare Workers.</div>
+        </details>
+        <details class="bg-white border rounded-lg">
+          <summary class="px-6 py-4 cursor-pointer font-medium text-gray-900 hover:text-blue-600">What notification channels does CronPulse support?</summary>
+          <div class="px-6 pb-4 text-sm text-gray-600">CronPulse supports email alerts (all plans), Slack incoming webhooks, and custom webhook notifications. Recovery notifications are also sent when a check comes back online.</div>
+        </details>
       </div>
     </div>
   </section>

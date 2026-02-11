@@ -7,6 +7,16 @@ import { now } from '../utils/time';
 type ApiEnv = { Bindings: Env; Variables: { user: User } };
 const api = new Hono<ApiEnv>();
 
+function parseTags(input: string | string[] | undefined | null): string {
+  if (!input) return '';
+  const raw = Array.isArray(input) ? input.join(',') : input;
+  const tags = raw
+    .split(',')
+    .map(t => t.trim().toLowerCase())
+    .filter(t => t.length > 0);
+  return [...new Set(tags)].join(',');
+}
+
 // CORS for API consumers
 api.use('*', cors({
   origin: '*',
@@ -49,17 +59,23 @@ api.use('*', async (c, next) => {
 // GET /api/v1/checks - List all checks
 api.get('/checks', async (c) => {
   const user = c.get('user');
+  const tagFilter = (c.req.query('tag') || '').trim().toLowerCase();
+
   const checks = await c.env.DB.prepare(
-    'SELECT id, name, period, grace, status, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+    'SELECT id, name, period, grace, status, tags, last_ping_at, next_expected_at, alert_count, ping_count, created_at, updated_at FROM checks WHERE user_id = ? ORDER BY created_at DESC'
   ).bind(user.id).all<Check>();
 
-  return c.json({ checks: checks.results });
+  const results = tagFilter
+    ? checks.results.filter(check => check.tags && check.tags.split(',').map(t => t.trim()).includes(tagFilter))
+    : checks.results;
+
+  return c.json({ checks: results });
 });
 
 // POST /api/v1/checks - Create a check
 api.post('/checks', async (c) => {
   const user = c.get('user');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[] };
 
   // Check limit
   const count = await c.env.DB.prepare(
@@ -74,6 +90,7 @@ api.post('/checks', async (c) => {
   const name = (body.name || '').trim() || 'Unnamed Check';
   const period = body.period || 3600;
   const grace = body.grace || 300;
+  const tags = parseTags(body.tags);
   const timestamp = now();
 
   // Validate period and grace
@@ -85,8 +102,8 @@ api.post('/checks', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'INSERT INTO checks (id, user_id, name, period, grace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(id, user.id, name, period, grace, 'new', timestamp, timestamp).run();
+    'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
 
   // Link to default channels
   const defaultChannels = await c.env.DB.prepare(
@@ -106,6 +123,69 @@ api.post('/checks', async (c) => {
   return c.json({
     check,
     ping_url: `${c.env.APP_URL}/ping/${id}`,
+  }, 201);
+});
+
+// GET /api/v1/checks/export - Export all checks as JSON
+api.get('/checks/export', async (c) => {
+  const user = c.get('user');
+  const checks = await c.env.DB.prepare(
+    'SELECT name, period, grace, tags FROM checks WHERE user_id = ? ORDER BY created_at DESC'
+  ).bind(user.id).all();
+
+  return c.json({
+    version: 1,
+    exported_at: new Date().toISOString(),
+    checks: checks.results.map((ch: any) => ({
+      name: ch.name,
+      period: ch.period,
+      grace: ch.grace,
+      tags: ch.tags || '',
+    })),
+  });
+});
+
+// POST /api/v1/checks/import - Import checks from JSON body
+api.post('/checks/import', async (c) => {
+  const user = c.get('user');
+  const body = await c.req.json().catch(() => ({})) as { checks?: any[] };
+
+  if (!body.checks || !Array.isArray(body.checks)) {
+    return c.json({ error: 'Invalid format. Expected { checks: [...] }' }, 400);
+  }
+
+  const countResult = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM checks WHERE user_id = ?'
+  ).bind(user.id).first();
+  const currentCount = (countResult?.count as number) || 0;
+  const remaining = user.check_limit - currentCount;
+
+  if (remaining <= 0) {
+    return c.json({ error: `Check limit reached (${user.check_limit} on ${user.plan} plan)` }, 403);
+  }
+
+  const toImport = body.checks.slice(0, remaining);
+  const imported: { id: string; name: string; ping_url: string }[] = [];
+
+  for (const ch of toImport) {
+    if (!ch.name) continue;
+    const id = generateCheckId();
+    const name = String(ch.name).trim().slice(0, 200) || 'Imported Check';
+    const period = Math.max(60, Math.min(604800, parseInt(ch.period) || 3600));
+    const grace = Math.max(60, Math.min(3600, parseInt(ch.grace) || 300));
+    const tags = parseTags(ch.tags || '');
+    const timestamp = now();
+
+    await c.env.DB.prepare(
+      'INSERT INTO checks (id, user_id, name, period, grace, tags, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(id, user.id, name, period, grace, tags, 'new', timestamp, timestamp).run();
+    imported.push({ id, name, ping_url: `${c.env.APP_URL}/ping/${id}` });
+  }
+
+  return c.json({
+    imported: imported.length,
+    skipped: body.checks.length - imported.length,
+    checks: imported,
   }, 201);
 });
 
@@ -130,7 +210,7 @@ api.get('/checks/:id', async (c) => {
 api.patch('/checks/:id', async (c) => {
   const user = c.get('user');
   const checkId = c.req.param('id');
-  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number };
+  const body = await c.req.json().catch(() => ({})) as { name?: string; period?: number; grace?: number; tags?: string | string[] };
 
   const existing = await c.env.DB.prepare(
     'SELECT * FROM checks WHERE id = ? AND user_id = ?'
@@ -141,6 +221,7 @@ api.patch('/checks/:id', async (c) => {
   const name = body.name !== undefined ? (body.name || '').trim() || 'Unnamed Check' : existing.name as string;
   const period = body.period || existing.period as number;
   const grace = body.grace || existing.grace as number;
+  const tags = body.tags !== undefined ? parseTags(body.tags) : (existing.tags as string || '');
 
   if (period < 60 || period > 604800) {
     return c.json({ error: 'Period must be between 60 and 604800 seconds' }, 400);
@@ -150,8 +231,8 @@ api.patch('/checks/:id', async (c) => {
   }
 
   await c.env.DB.prepare(
-    'UPDATE checks SET name = ?, period = ?, grace = ?, updated_at = ? WHERE id = ?'
-  ).bind(name, period, grace, now(), checkId).run();
+    'UPDATE checks SET name = ?, period = ?, grace = ?, tags = ?, updated_at = ? WHERE id = ?'
+  ).bind(name, period, grace, tags, now(), checkId).run();
 
   try { await c.env.KV.delete(`check:${checkId}`); } catch {}
 

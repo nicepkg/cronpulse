@@ -70,6 +70,9 @@ function renderDocsPage(appUrl: string): string {
       <a href="#delete-check">Delete check</a>
       <a href="#pause-check">Pause check</a>
       <a href="#resume-check">Resume check</a>
+      <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Import &amp; Export</p>
+      <a href="#export-checks">Export checks</a>
+      <a href="#import-checks">Import checks</a>
       <p class="text-xs font-semibold text-gray-400 uppercase tracking-wider mt-4 mb-2">Pings &amp; Alerts</p>
       <a href="#ping-history">Ping history</a>
       <a href="#alert-history">Alert history</a>
@@ -214,6 +217,66 @@ function renderDocsPage(appUrl: string): string {
       <h3>Response</h3>
       <pre><code>{
   "resumed": true
+}</code></pre>
+
+      <h2 id="export-checks">Export Checks</h2>
+      <p><span class="method method-get">GET</span> <span class="endpoint">/api/v1/checks/export</span></p>
+      <p>Export all checks as a JSON file. Useful for backup or migration.</p>
+      <pre><code>curl -H "Authorization: Bearer YOUR_API_KEY" \\
+  ${appUrl}/api/v1/checks/export</code></pre>
+      <h3>Response</h3>
+      <pre><code>{
+  "version": 1,
+  "exported_at": "2026-02-12T10:30:00.000Z",
+  "checks": [
+    {
+      "name": "Nightly backup",
+      "period": 86400,
+      "grace": 300,
+      "tags": "production,database"
+    }
+  ]
+}</code></pre>
+
+      <h2 id="import-checks">Import Checks</h2>
+      <p><span class="method method-post">POST</span> <span class="endpoint">/api/v1/checks/import</span></p>
+      <p>Import checks from a JSON payload. Uses the same format as the export endpoint. Checks that exceed your plan limit will be skipped.</p>
+      <h3>Request Body</h3>
+      <pre><code>{
+  "checks": [
+    {
+      "name": "Nightly backup",
+      "period": 86400,
+      "grace": 300,
+      "tags": "production,database"
+    },
+    {
+      "name": "Hourly sync",
+      "period": 3600,
+      "grace": 120
+    }
+  ]
+}</code></pre>
+      <pre><code>curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d @cronpulse-checks.json \\
+  ${appUrl}/api/v1/checks/import</code></pre>
+      <h3>Response <code>201</code></h3>
+      <pre><code>{
+  "imported": 2,
+  "skipped": 0,
+  "checks": [
+    {
+      "id": "abc123",
+      "name": "Nightly backup",
+      "ping_url": "${appUrl}/ping/abc123"
+    },
+    {
+      "id": "def456",
+      "name": "Hourly sync",
+      "ping_url": "${appUrl}/ping/def456"
+    }
+  ]
 }</code></pre>
 
       <h2 id="ping-history">Ping History</h2>
