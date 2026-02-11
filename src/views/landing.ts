@@ -1,4 +1,4 @@
-export function renderLandingPage(appUrl: string = 'https://cronpulse.dev'): string {
+export function renderLandingPage(appUrl: string = 'https://cron-pulse.com'): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

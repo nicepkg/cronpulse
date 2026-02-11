@@ -182,7 +182,7 @@ function renderPost1(): string {
 <h3>2. Heartbeat / Dead Man's Switch</h3>
 <p>Your cron job pings a URL when it completes. If the ping doesn't arrive on time, you get an alert. This is the most reliable approach because it catches <em>all</em> failure modes: crashed scripts, deleted crontabs, server outages, and permission errors.</p>
 <pre><code># Add this to the end of your cron job:
-curl -fsS --retry 3 https://cronpulse.dev/ping/YOUR_CHECK_ID</code></pre>
+curl -fsS --retry 3 https://cron-pulse.com/ping/YOUR_CHECK_ID</code></pre>
 
 <h3>3. Agent-Based Monitoring</h3>
 <p>Install an agent on the server that watches the cron daemon directly. Heavier but provides the most detail.</p>
@@ -190,7 +190,7 @@ curl -fsS --retry 3 https://cronpulse.dev/ping/YOUR_CHECK_ID</code></pre>
 <h2>Setting Up Heartbeat Monitoring with CronPulse</h2>
 <ol>
   <li><strong>Create a check</strong> &mdash; Set the expected interval (e.g., every 1 hour) and grace period (e.g., 5 minutes)</li>
-  <li><strong>Add one line to your script</strong> &mdash; <code>curl -fsS https://cronpulse.dev/ping/YOUR_ID</code></li>
+  <li><strong>Add one line to your script</strong> &mdash; <code>curl -fsS https://cron-pulse.com/ping/YOUR_ID</code></li>
   <li><strong>Get alerted</strong> &mdash; If the ping doesn't arrive, CronPulse sends email, Slack, or webhook alerts</li>
 </ol>
 
@@ -235,7 +235,7 @@ function renderPost2(): string {
 <h3>The Story</h3>
 <p>A cleanup script ran as root for two years. A security audit recommended running it as a service account. After the change, the script silently failed &mdash; it couldn't read the directories it needed to clean. The cron daemon logged "Permission denied" to a file nobody was watching.</p>
 <h3>The Fix</h3>
-<p>Only ping the monitoring endpoint <em>after</em> successful completion: <code>./cleanup.sh && curl https://cronpulse.dev/ping/ID</code>. If the script fails, the ping never fires.</p>
+<p>Only ping the monitoring endpoint <em>after</em> successful completion: <code>./cleanup.sh && curl https://cron-pulse.com/ping/ID</code>. If the script fails, the ping never fires.</p>
 
 <h2>5. The Dependency Chain Collapse</h2>
 <h3>The Story</h3>

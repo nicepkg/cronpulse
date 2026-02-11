@@ -29,7 +29,7 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL="${1:-https://cronpulse.2214962083.workers.dev}"
+BASE_URL="${1:-https://cron-pulse.com}"
 
 # Strip trailing slash if present
 BASE_URL="${BASE_URL%/}"

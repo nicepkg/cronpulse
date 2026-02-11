@@ -9,10 +9,10 @@ Add one `curl` to your cron job. Get alerted when it stops running.
 
 ```bash
 # Add this to the end of any cron script:
-curl -fsS https://cronpulse.2214962083.workers.dev/ping/YOUR_CHECK_ID
+curl -fsS https://cron-pulse.com/ping/YOUR_CHECK_ID
 ```
 
-**Try the hosted version:** [cronpulse.2214962083.workers.dev](https://cronpulse.2214962083.workers.dev) — free for up to 10 checks.
+**Try the hosted version:** [cron-pulse.com](https://cron-pulse.com) — free for up to 10 checks.
 
 ## Architecture
 
@@ -145,7 +145,7 @@ src/
 
 ## API
 
-Full API documentation: [/docs](https://cronpulse.2214962083.workers.dev/docs)
+Full API documentation: [/docs](https://cron-pulse.com/docs)
 
 ```bash
 # Create a check
@@ -170,4 +170,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome.
 
 [AGPL-3.0](LICENSE) — You can use, modify, and self-host CronPulse freely. If you run a modified version as a public service, you must open-source your changes.
 
-For managed hosting without the operational overhead, use the hosted version at [cronpulse.2214962083.workers.dev](https://cronpulse.2214962083.workers.dev).
+For managed hosting without the operational overhead, use the hosted version at [cron-pulse.com](https://cron-pulse.com).

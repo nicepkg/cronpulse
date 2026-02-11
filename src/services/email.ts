@@ -1,7 +1,7 @@
 import type { Env } from '../types';
 
 // Email sender domain: use custom domain if configured, else Resend test domain
-const CUSTOM_DOMAIN = 'cronpulse.dev';
+const CUSTOM_DOMAIN = 'cron-pulse.com';
 const RESEND_TEST_FROM = 'CronPulse <onboarding@resend.dev>';
 
 function getFromAddress(name: string): string {
