@@ -1291,15 +1291,15 @@ function renderCheckDetail(check: Check, pings: any[], alerts: any[], appUrl: st
         <div>
           <p class="text-xs text-gray-500 mb-1">Markdown</p>
           <div class="flex items-center gap-2">
-            <code id="badge-md" class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">![CronPulse](${appUrl}/badge/${check.id})</code>
-            <button onclick="copyToClipboard('![CronPulse](${appUrl}/badge/${check.id})', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
+            <code id="badge-md" class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">[![CronPulse](${appUrl}/badge/${check.id})](${appUrl}?utm_source=badge&amp;utm_medium=referral)</code>
+            <button onclick="copyToClipboard('[![CronPulse](${appUrl}/badge/${check.id})](${appUrl}?utm_source=badge&utm_medium=referral)', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
           </div>
         </div>
         <div>
           <p class="text-xs text-gray-500 mb-1">HTML</p>
           <div class="flex items-center gap-2">
-            <code class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">&lt;img src="${appUrl}/badge/${check.id}" alt="CronPulse status" /&gt;</code>
-            <button onclick="copyToClipboard('<img src=&quot;${appUrl}/badge/${check.id}&quot; alt=&quot;CronPulse status&quot; />', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
+            <code class="bg-gray-100 px-3 py-1.5 rounded text-xs block whitespace-nowrap overflow-x-auto flex-1">&lt;a href="${appUrl}?utm_source=badge&amp;utm_medium=referral"&gt;&lt;img src="${appUrl}/badge/${check.id}" alt="CronPulse status" /&gt;&lt;/a&gt;</code>
+            <button onclick="copyToClipboard('<a href=&quot;${appUrl}?utm_source=badge&amp;utm_medium=referral&quot;><img src=&quot;${appUrl}/badge/${check.id}&quot; alt=&quot;CronPulse status&quot; /></a>', this)" class="shrink-0 px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-600 transition-colors">Copy</button>
           </div>
         </div>
       </div>
